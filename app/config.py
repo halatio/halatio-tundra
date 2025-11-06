@@ -45,7 +45,8 @@ class Settings(BaseSettings):
         """Dynamically determine CORS origins based on environment"""
         base = [
             "https://illutix.com",
-            "https://www.illutix.com"
+            "https://www.illutix.com",
+            "https://illutix.vercel.app"
         ]
         if self.ENV != "production":
             base.append("http://localhost:3000")
