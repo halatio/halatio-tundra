@@ -21,7 +21,7 @@ class FileConverter:
         source_url: str,
         output_url: str,
         file_format: str,
-        options: Dict[str, Any] = None
+        options: Dict[str, Any] = {}
     ) -> Dict[str, Any]:
         """Convert file from R2 source URL to parquet at output URL"""
 

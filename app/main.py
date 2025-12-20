@@ -7,7 +7,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from .config import settings
 from .models.conversionRequest import (
-    FileConversionRequest, ApiConversionRequest, SqlConversionRequest,
+    FileConversionRequest, SqlConversionRequest,
     ConversionResponse, HealthResponse,
     SchemaInferRequest, SchemaInferResponse,
     SqlConnectionTestRequest, SqlConnectionTestResponse
@@ -185,7 +185,7 @@ async def service_info():
         "service": "illutix-tundra",
         "version": "2.0.0",
         "capabilities": {
-            "file_formats": ["csv", "tsv", "excel", "parquet"],
+            "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
             "output_format": "parquet",
             "max_file_size_mb": 500,
             "supported_sources": ["file", "sql"]
