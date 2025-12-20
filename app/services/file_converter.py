@@ -19,48 +19,75 @@ class FileConverter:
     @staticmethod
     async def convert(
         source_url: str,
-        output_url: str, 
-        file_format: str
+        output_url: str,
+        file_format: str,
+        options: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """Convert file from R2 source URL to parquet at output URL"""
-        
+
         start_time = time.time()
-        
+        options = options or {}
+        warnings = []
+        rows_skipped = 0
+
         try:
             logger.info(f"🔄 Starting conversion: {file_format} → parquet")
-            
+
             # 1. Download source file from R2
             file_content = await FileConverter._download_file(source_url)
-            
+
             # 2. Parse with Polars based on format
-            df = FileConverter._parse_file(file_content, file_format)
-            
-            # 3. Convert to parquet
+            df = FileConverter._parse_file(file_content, file_format, options)
+
+            # 3. Apply transformations if provided
+            if options.get('column_mapping'):
+                df = df.rename(options['column_mapping'])
+                logger.info(f"✏️ Applied column mapping: {len(options['column_mapping'])} columns renamed")
+
+            if options.get('type_overrides'):
+                for col, dtype in options['type_overrides'].items():
+                    try:
+                        df = df.with_columns(pl.col(col).cast(dtype))
+                    except Exception as e:
+                        warnings.append(f"Could not cast column '{col}' to {dtype}: {str(e)}")
+                logger.info(f"🔄 Applied type overrides: {len(options['type_overrides'])} columns")
+
+            if options.get('skip_rows'):
+                skip_rows = options['skip_rows']
+                rows_skipped = len(skip_rows)
+                # Create a mask for rows to keep
+                keep_mask = [i not in skip_rows for i in range(len(df))]
+                df = df.filter(pl.Series(keep_mask))
+                logger.info(f"⏭️ Skipped {rows_skipped} rows")
+
+            # 4. Convert to parquet
             parquet_buffer = FileConverter._convert_to_parquet(df)
-            
-            # 4. Upload parquet to R2
+
+            # 5. Upload parquet to R2
             await FileConverter._upload_parquet(output_url, parquet_buffer)
-            
-            # 5. Generate metadata
+
+            # 6. Generate metadata
             processing_time = time.time() - start_time
             file_size_mb = len(parquet_buffer) / 1024 / 1024
-            
+
             metadata = ConversionMetadata(
                 rows=len(df),
                 columns=len(df.columns),
                 column_schema=FileConverter._generate_schema(df),
                 file_size_mb=round(file_size_mb, 2),
                 processing_time_seconds=round(processing_time, 2),
-                source_type="file"
+                source_type="file",
+                rows_skipped=rows_skipped if rows_skipped > 0 else None,
+                warnings=warnings if warnings else None
             )
-            
+
             logger.info(f"✅ Conversion successful: {len(df)} rows, {file_size_mb:.2f}MB")
-            
+
             return {
                 "success": True,
                 "metadata": metadata.dict()
             }
-            
+
         except Exception as e:
             logger.error(f"❌ Conversion failed: {str(e)}")
             return {
@@ -92,38 +119,65 @@ class FileConverter:
                 return content
     
     @staticmethod
-    def _parse_file(content: bytes, file_format: str) -> pl.DataFrame:
+    def _parse_file(content: bytes, file_format: str, options: Dict[str, Any]) -> pl.DataFrame:
         """Parse file content with Polars native methods"""
-        
+
         try:
             if file_format == "csv":
                 return pl.read_csv(
                     BytesIO(content),
+                    encoding=options.get('encoding', 'utf-8'),
+                    separator=options.get('delimiter', ','),
+                    has_header=options.get('has_header', True),
                     try_parse_dates=True,
                     null_values=["", "NULL", "null", "N/A", "n/a"],
-                    ignore_errors=True
+                    ignore_errors=True,
+                    infer_schema_length=None  # Infer from all rows
                 )
-            
+
             elif file_format == "tsv":
                 return pl.read_csv(
                     BytesIO(content),
-                    separator='\t',
+                    encoding=options.get('encoding', 'utf-8'),
+                    separator=options.get('delimiter', '\t'),
+                    has_header=options.get('has_header', True),
                     try_parse_dates=True,
                     null_values=["", "NULL", "null", "N/A", "n/a"],
-                    ignore_errors=True
+                    ignore_errors=True,
+                    infer_schema_length=None
                 )
-            
+
+            elif file_format == "excel":
+                # Use sheet_name or sheet_index from options
+                sheet_name = options.get('sheet_name')
+                sheet_index = options.get('sheet_index', 0)
+                sheet = sheet_name if sheet_name else sheet_index
+
+                logger.info(f"📊 Reading Excel sheet: {sheet}")
+
+                return pl.read_excel(
+                    BytesIO(content),
+                    sheet_name=sheet,
+                    engine='calamine',  # Fast Rust-based engine
+                    infer_schema_length=10000
+                )
+
+            elif file_format == "parquet":
+                # Parquet is already in the target format, but we might apply transformations
+                logger.info(f"📦 Reading Parquet file")
+                return pl.read_parquet(BytesIO(content))
+
             elif file_format == "json":
                 return pl.read_json(BytesIO(content))
-            
+
             elif file_format == "geojson":
                 # Parse GeoJSON and convert to business-friendly format
                 geo_data = json.loads(content.decode('utf-8'))
                 return FileConverter._process_geojson(geo_data)
-            
+
             else:
                 raise ValueError(f"Unsupported file format: {file_format}")
-                
+
         except Exception as e:
             raise ValueError(f"Failed to parse {file_format} file: {str(e)}")
     

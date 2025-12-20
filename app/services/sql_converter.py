@@ -23,52 +23,67 @@ class SqlConverter:
         database: str,
         query: str,
         output_url: str,
-        credentials_id: Optional[str] = None
+        credentials_id: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """Execute SQL query and convert results to parquet"""
-        
+
         start_time = time.time()
-        
+        query_start_time = None
+        query_execution_time_ms = None
+        options = options or {}
+
         try:
             logger.info(f"💾 Starting SQL conversion: {database}")
-            
+
+            # Extract options
+            max_rows = options.get('max_rows', SqlConverter.DEFAULT_QUERY_LIMIT)
+            query_timeout = options.get('query_timeout_seconds', SqlConverter.TIMEOUT_SECONDS)
+
             # 1. Add safety limit to query if not present
-            safe_query = SqlConverter._add_safety_limit(query)
-            
+            safe_query = SqlConverter._add_safety_limit(query, max_rows)
+
             # 2. Execute SQL query
+            query_start_time = time.time()
             sql_results = await SqlConverter._execute_sql_query(
-                endpoint, database, safe_query, credentials_id
+                endpoint, database, safe_query, credentials_id, options, query_timeout
             )
-            
+            query_execution_time_ms = (time.time() - query_start_time) * 1000
+
             # 3. Convert results to DataFrame
             df = SqlConverter._create_dataframe(sql_results)
-            
+
             # 4. Convert to parquet
             parquet_buffer = SqlConverter._convert_to_parquet(df)
-            
+
             # 5. Upload to R2
             await SqlConverter._upload_parquet(output_url, parquet_buffer)
-            
+
             # 6. Generate metadata
             processing_time = time.time() - start_time
             file_size_mb = len(parquet_buffer) / 1024 / 1024
-            
+
             metadata = ConversionMetadata(
                 rows=len(df),
                 columns=len(df.columns),
                 column_schema=SqlConverter._generate_schema(df),
                 file_size_mb=round(file_size_mb, 2),
                 processing_time_seconds=round(processing_time, 2),
-                source_type="sql"
+                source_type="sql",
+                query_execution_time_ms=round(query_execution_time_ms, 2) if query_execution_time_ms else None,
+                connection_info={
+                    "database_type": options.get('database_type', 'Unknown'),
+                    "rows_fetched": len(df)
+                }
             )
-            
+
             logger.info(f"✅ SQL conversion successful: {len(df)} rows, {file_size_mb:.2f}MB")
-            
+
             return {
                 "success": True,
                 "metadata": metadata.dict()
             }
-            
+
         except Exception as e:
             logger.error(f"❌ SQL conversion failed: {str(e)}")
             return {
@@ -81,29 +96,37 @@ class SqlConverter:
         endpoint: str,
         database: str,
         query: str,
-        credentials_id: Optional[str]
+        credentials_id: Optional[str],
+        options: Dict[str, Any],
+        timeout: int
     ) -> list:
         """Execute SQL query via API endpoint"""
-        
+
         # Build request headers
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
-        
+
         # Add authentication if credentials provided
         if credentials_id:
             auth_headers = await SqlConverter._get_auth_headers(credentials_id)
             headers.update(auth_headers)
-        
+
         # Prepare request body
         request_body = {
             "query": query,
             "database": database
         }
-        
+
+        # Add optional parameters from options
+        if options.get('port'):
+            request_body["port"] = options['port']
+        if options.get('ssl_mode'):
+            request_body["ssl_mode"] = options['ssl_mode']
+
         # Execute SQL query
-        async with httpx.AsyncClient(timeout=SqlConverter.TIMEOUT_SECONDS) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(endpoint, headers=headers, json=request_body)
             response.raise_for_status()
             
@@ -151,21 +174,24 @@ class SqlConverter:
         # return {}
     
     @staticmethod
-    def _add_safety_limit(query: str) -> str:
+    def _add_safety_limit(query: str, max_rows: int = None) -> str:
         """Add LIMIT clause to query if not present for safety"""
-        
+
+        if max_rows is None:
+            max_rows = SqlConverter.DEFAULT_QUERY_LIMIT
+
         trimmed_query = query.strip().lower()
-        
+
         # Check if LIMIT already exists
         if 'limit' in trimmed_query:
             return query  # Keep original query
-        
+
         # Add safety limit
         original_query = query.strip()
         if original_query.endswith(';'):
-            return f"{original_query[:-1]} LIMIT {SqlConverter.DEFAULT_QUERY_LIMIT};"
+            return f"{original_query[:-1]} LIMIT {max_rows};"
         else:
-            return f"{original_query} LIMIT {SqlConverter.DEFAULT_QUERY_LIMIT}"
+            return f"{original_query} LIMIT {max_rows}"
     
     @staticmethod
     def _extract_rows_from_response(data: Any) -> list:
