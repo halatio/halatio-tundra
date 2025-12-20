@@ -109,13 +109,13 @@ class ColumnSchema(BaseModel):
     """Schema information for a single column"""
     name: str = Field(..., description="Column name")
     inferred_type: str = Field(..., description="Inferred Polars data type")
-    detected_format: Optional[str] = Field(None, description="Detected format (email, url, phone, etc.)")
+    detected_format: Optional[str] = Field(default=None, description="Detected format (email, url, phone, etc.)")
     nullable: bool = Field(..., description="Whether column contains null values")
     null_count: int = Field(..., description="Number of null values")
-    unique_count: Optional[int] = Field(None, description="Number of unique values")
+    unique_count: Optional[int] = Field(default=None, description="Number of unique values")
     sample_values: List[Any] = Field(..., description="Sample values from column")
-    min_value: Optional[Union[float, str]] = Field(None, description="Minimum value (numeric/date columns)")
-    max_value: Optional[Union[float, str]] = Field(None, description="Maximum value (numeric/date columns)")
+    min_value: Optional[Union[float, str]] = Field(default=None, description="Minimum value (numeric/date columns)")
+    max_value: Optional[Union[float, str]] = Field(default=None, description="Maximum value (numeric/date columns)")
 
 class SchemaInfo(BaseModel):
     """Overall schema information"""

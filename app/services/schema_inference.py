@@ -143,11 +143,11 @@ class SchemaInferenceService:
                 try:
                     min_val = col.min()
                     max_val = col.max()
-                    if min_val is not None:
+                    if min_val is not None and isinstance(min_val, (int, float)):
                         col_schema.min_value = float(min_val)
-                    if max_val is not None:
+                    if max_val is not None and isinstance(max_val, (int, float)):
                         col_schema.max_value = float(max_val)
-                except:
+                except Exception:
                     pass
 
             elif dtype in [pl.Date, pl.Datetime]:
@@ -158,7 +158,7 @@ class SchemaInferenceService:
                         col_schema.min_value = str(min_val)
                     if max_val is not None:
                         col_schema.max_value = str(max_val)
-                except:
+                except Exception:
                     pass
 
             columns.append(col_schema)
