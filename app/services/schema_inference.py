@@ -48,7 +48,7 @@ class SchemaInferenceService:
 
             return {
                 "success": True,
-                "schema": schema_info.dict(),
+                "schema_info": schema_info.dict(),
                 "sample_data": sample_data,
                 "warnings": [w.dict() for w in warnings]
             }
@@ -141,25 +141,35 @@ class SchemaInferenceService:
             # Add min/max for numeric and date columns
             elif dtype.is_numeric():
                 try:
-                    col_schema.min_value = float(col.min())
-                    col_schema.max_value = float(col.max())
+                    min_val = col.min()
+                    max_val = col.max()
+                    if min_val is not None:
+                        col_schema.min_value = float(min_val)
+                    if max_val is not None:
+                        col_schema.max_value = float(max_val)
                 except:
                     pass
 
             elif dtype in [pl.Date, pl.Datetime]:
                 try:
-                    col_schema.min_value = str(col.min())
-                    col_schema.max_value = str(col.max())
+                    min_val = col.min()
+                    max_val = col.max()
+                    if min_val is not None:
+                        col_schema.min_value = str(min_val)
+                    if max_val is not None:
+                        col_schema.max_value = str(max_val)
                 except:
                     pass
 
             columns.append(col_schema)
 
+        estimated_size = df.estimated_size()
+
         return SchemaInfo(
             columns=columns,
             total_rows=len(df),
             total_columns=len(df.columns),
-            file_size_bytes=df.estimated_size()
+            file_size_bytes=int(estimated_size) if estimated_size is not None else None
         )
 
     @staticmethod

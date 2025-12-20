@@ -31,7 +31,7 @@ class SqlConnectionTestService:
             test_query = "SELECT 1 as connection_test"
 
             # Prepare request
-            request_body = {
+            request_body: Dict[str, Any] = {
                 "query": test_query,
                 "database": database
             }

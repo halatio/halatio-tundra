@@ -174,7 +174,7 @@ class SqlConverter:
         # return {}
     
     @staticmethod
-    def _add_safety_limit(query: str, max_rows: int = None) -> str:
+    def _add_safety_limit(query: str, max_rows: Optional[int] = None) -> str:
         """Add LIMIT clause to query if not present for safety"""
 
         if max_rows is None:

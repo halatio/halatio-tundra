@@ -144,7 +144,7 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
             sample_size=body.sample_size
         )
 
-        logger.info(f"✅ Schema inference complete: {result['schema']['total_columns']} columns")
+        logger.info(f"✅ Schema inference complete: {result['schema_info']['total_columns']} columns")
         return SchemaInferResponse(**result)
 
     except Exception as e:

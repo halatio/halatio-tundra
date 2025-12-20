@@ -73,10 +73,10 @@ class ConversionMetadata(BaseModel):
     file_size_mb: float = Field(..., description="Output parquet file size in MB")
     processing_time_seconds: float = Field(..., description="Time taken to process")
     source_type: str = Field(..., description="Type of source data (file, api, sql)")
-    rows_skipped: Optional[int] = Field(None, description="Number of rows skipped during conversion")
-    warnings: Optional[List[str]] = Field(None, description="Warnings during conversion")
-    query_execution_time_ms: Optional[float] = Field(None, description="SQL query execution time (SQL only)")
-    connection_info: Optional[Dict[str, Any]] = Field(None, description="Database connection info (SQL only)")
+    rows_skipped: Optional[int] = Field(default=None, description="Number of rows skipped during conversion")
+    warnings: Optional[List[str]] = Field(default=None, description="Warnings during conversion")
+    query_execution_time_ms: Optional[float] = Field(default=None, description="SQL query execution time (SQL only)")
+    connection_info: Optional[Dict[str, Any]] = Field(default=None, description="Database connection info (SQL only)")
 
 class ConversionResponse(BaseModel):
     """Response from conversion operations"""
@@ -134,9 +134,12 @@ class ValidationWarning(BaseModel):
 class SchemaInferResponse(BaseModel):
     """Response from schema inference"""
     success: bool = Field(..., description="Whether inference succeeded")
-    schema: SchemaInfo = Field(..., description="Inferred schema")
+    schema_info: SchemaInfo = Field(..., description="Inferred schema", serialization_alias="schema")
     sample_data: List[Dict[str, Any]] = Field(..., description="Sample rows")
     warnings: List[ValidationWarning] = Field(default_factory=list, description="Data quality warnings")
+
+    class Config:
+        populate_by_name = True
 
 # New models for SQL connection testing
 class SqlCredentials(BaseModel):
