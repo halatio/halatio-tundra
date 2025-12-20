@@ -1,8 +1,11 @@
 fastapi
 uvicorn[standard]
-polars
+polars[excel]
 pydantic
 pydantic-settings
 python-multipart
 httpx
 python-dotenv
+python-jose[cryptography]
+slowapi
+pyarrow

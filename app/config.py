@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     MAX_CONCURRENT_CONVERSIONS: int = 5
 
     # File formats
-    SUPPORTED_FILE_FORMATS: List[str] = ["csv", "tsv", "json", "geojson"]
+    SUPPORTED_FILE_FORMATS: List[str] = ["csv", "tsv", "json", "geojson", "excel", "parquet"]
 
     # Parquet
     PARQUET_COMPRESSION: str = "snappy"
