@@ -170,54 +170,12 @@ class FileConverter:
             elif file_format == "json":
                 return pl.read_json(BytesIO(content))
 
-            elif file_format == "geojson":
-                # Parse GeoJSON and convert to business-friendly format
-                geo_data = json.loads(content.decode('utf-8'))
-                return FileConverter._process_geojson(geo_data)
-
             else:
                 raise ValueError(f"Unsupported file format: {file_format}")
 
         except Exception as e:
             raise ValueError(f"Failed to parse {file_format} file: {str(e)}")
     
-    @staticmethod
-    def _process_geojson(geo_data: dict) -> pl.DataFrame:
-        """Convert GeoJSON to business-friendly tabular format"""
-        
-        if geo_data.get("type") != "FeatureCollection":
-            raise ValueError("Invalid GeoJSON: Expected FeatureCollection")
-        
-        features = geo_data.get("features", [])
-        business_data = []
-        
-        for i, feature in enumerate(features):
-            properties = feature.get("properties", {})
-            geometry = feature.get("geometry", {})
-            
-            row = {
-                "feature_id": i + 1,
-                "name": properties.get("name") or properties.get("NAME") or f"Feature {i + 1}",
-                "geometry_type": geometry.get("type", "Unknown"),
-                "area_type": FileConverter._classify_geo_feature(geometry.get("type")),
-                **properties,
-                "coordinate_count": FileConverter._count_coordinates(geometry),
-                "has_interior_rings": FileConverter._has_interior_rings(geometry),
-                "_geometry": json.dumps(geometry),  # Store as JSON string
-                "_feature_index": i
-            }
-            business_data.append(row)
-        
-        if not business_data:
-            # Return empty DataFrame with standard structure
-            return pl.DataFrame({
-                "feature_id": [],
-                "name": [],
-                "geometry_type": [],
-                "area_type": []
-            })
-        
-        return pl.DataFrame(business_data)
     
     @staticmethod
     def _convert_to_parquet(df: pl.DataFrame) -> bytes:
@@ -284,34 +242,3 @@ class FileConverter:
             "format": "parquet",
             "encoding": "utf-8"
         }
-    
-    # Helper methods for GeoJSON processing
-    @staticmethod
-    def _classify_geo_feature(geometry_type: str) -> str:
-        mapping = {
-            "Point": "Location",
-            "LineString": "Route/Boundary",
-            "MultiLineString": "Route/Boundary", 
-            "Polygon": "Area/Region",
-            "MultiPolygon": "Area/Region"
-        }
-        return mapping.get(geometry_type, "Geographic Feature")
-    
-    @staticmethod
-    def _count_coordinates(geometry: dict) -> int:
-        if not geometry or "coordinates" not in geometry:
-            return 0
-        
-        def count_recursive(coords):
-            if not isinstance(coords, list):
-                return 0
-            if len(coords) == 2 and all(isinstance(x, (int, float)) for x in coords):
-                return 1
-            return sum(count_recursive(item) for item in coords)
-        
-        return count_recursive(geometry["coordinates"])
-    
-    @staticmethod
-    def _has_interior_rings(geometry: dict) -> bool:
-        return (geometry.get("type") == "Polygon" and 
-                len(geometry.get("coordinates", [])) > 1)

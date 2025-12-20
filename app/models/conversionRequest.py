@@ -54,14 +54,6 @@ class FileConversionRequest(BaseModel):
     options: Optional[FileConversionOptions] = Field(None, description="Conversion options and transformations")
     webhook_url: Optional[HttpUrl] = Field(None, description="Webhook URL for progress updates")
 
-class ApiConversionRequest(BaseModel):
-    """Request model for API conversions"""
-    output_url: HttpUrl = Field(..., description="Signed PUT URL for Parquet output")
-    api_endpoint: HttpUrl = Field(..., description="API endpoint URL")
-    api_method: HTTPMethod = Field(HTTPMethod.GET, description="HTTP method")
-    api_headers: Optional[Dict[str, str]] = Field(None, description="Additional HTTP headers")
-    api_data_path: Optional[str] = Field(None, description="JSON path to data array")
-
 class SqlConversionRequest(BaseModel):
     """Request model for SQL conversions"""
     output_url: HttpUrl = Field(..., description="Signed PUT URL for Parquet output")

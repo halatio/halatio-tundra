@@ -13,7 +13,6 @@ from .models.conversionRequest import (
     SqlConnectionTestRequest, SqlConnectionTestResponse
 )
 from .services.file_converter import FileConverter
-from .services.api_converter import ApiConverter
 from .services.sql_converter import SqlConverter
 from .services.schema_inference import SchemaInferenceService
 from .services.sql_connection_test import SqlConnectionTestService
@@ -101,31 +100,6 @@ async def convert_file(request: Request, body: FileConversionRequest):
         logger.error(f"❌ File conversion failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
-@app.post("/convert/api", response_model=ConversionResponse)
-@limiter.limit("10/minute")
-async def convert_api_data(request: Request, body: ApiConversionRequest):
-    """Fetch data from API and convert to parquet format"""
-
-    logger.info(f"🔗 Converting API data: {body.api_endpoint}")
-    
-    try:
-        result = await ApiConverter.convert(
-            endpoint=str(body.api_endpoint),
-            output_url=str(body.output_url),
-            method=body.api_method,
-            headers=body.api_headers,
-            data_path=body.api_data_path
-        )
-        
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-        
-        logger.info(f"✅ API conversion complete: {result['metadata']['rows']} rows")
-        return ConversionResponse(**result)
-        
-    except Exception as e:
-        logger.error(f"❌ API conversion failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"API conversion failed: {str(e)}")
 
 @app.post("/convert/sql", response_model=ConversionResponse)
 @limiter.limit("10/minute")
@@ -211,10 +185,10 @@ async def service_info():
         "service": "illutix-tundra",
         "version": "2.0.0",
         "capabilities": {
-            "file_formats": ["csv", "tsv", "json", "geojson", "excel", "parquet"],
+            "file_formats": ["csv", "tsv", "excel", "parquet"],
             "output_format": "parquet",
             "max_file_size_mb": 500,
-            "supported_sources": ["file", "api", "sql"]
+            "supported_sources": ["file", "sql"]
         },
         "limits": {
             "max_processing_time_minutes": 10,
