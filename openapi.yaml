@@ -16,7 +16,7 @@ paths:
   /:
     get:
       operationId: root
-      security: []  # 🔓 No auth required
+      security: []
       responses:
         '200':
           description: Root response
