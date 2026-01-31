@@ -27,14 +27,14 @@ limiter = Limiter(key_func=get_remote_address)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    logger.info("🚀 Starting Illutix Tundra Data Conversion Service")
+    logger.info("🚀 Starting Halatio Tundra Data Conversion Service")
     yield
     # Shutdown
-    logger.info("🛑 Illutix Tundra shutdown complete")
+    logger.info("🛑 Halatio Tundra shutdown complete")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Illutix Tundra",
+    title="Halatio Tundra",
     description="High-performance data conversion service - Files to Parquet (v2.0 with Excel, schema inference, and enhanced options)",
     version="2.0.0",
     lifespan=lifespan
@@ -58,7 +58,7 @@ async def root():
     """Root endpoint"""
     return HealthResponse(
         status="running",
-        service="illutix-tundra",
+        service="halatio-tundra",
         version="2.0.0"
     )
 
@@ -67,7 +67,7 @@ async def health_check():
     """Health check endpoint"""
     return HealthResponse(
         status="healthy",
-        service="illutix-tundra",
+        service="halatio-tundra",
         version="2.0.0"
     )
 
@@ -182,7 +182,7 @@ async def test_sql_connection(request: Request, body: SqlConnectionTestRequest):
 async def service_info():
     """Get service capabilities and limits"""
     return {
-        "service": "illutix-tundra",
+        "service": "halatio-tundra",
         "version": "2.0.0",
         "capabilities": {
             "file_formats": ["csv", "tsv", "excel", "json", "parquet"],

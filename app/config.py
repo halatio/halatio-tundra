@@ -3,7 +3,7 @@ from pydantic import Field, HttpUrl
 from typing import List
 
 class Settings(BaseSettings):
-    """Settings for Illutix Tundra conversion service"""
+    """Settings for Halatio Tundra conversion service"""
 
     # Runtime environment: 'dev', 'staging', or 'production'
     ENV: str = Field(..., description="Environment: dev, staging, production")
@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     def ALLOWED_ORIGINS(self) -> List[str]:
         """Dynamically determine CORS origins based on environment"""
         base = [
-            "https://illutix.com",
-            "https://www.illutix.com",
-            "https://illutix.vercel.app"
+            "https://halatio.com",
+            "https://www.halatio.com",
+            "https://halatio.vercel.app"
         ]
         if self.ENV != "production":
             base.append("http://localhost:3000")

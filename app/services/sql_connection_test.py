@@ -78,7 +78,7 @@ class SqlConnectionTestService:
                         [
                             "Verify the hostname and port are correct",
                             "Check your database server is running",
-                            "Ensure your firewall allows connections from Illutix IPs"
+                            "Ensure your firewall allows connections from Halatio IPs"
                         ]
                     )
 

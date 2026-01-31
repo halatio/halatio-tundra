@@ -1,10 +1,10 @@
-# Illutix Tundra - Data Conversion Service
+# Halatio Tundra - Data Conversion Service
 
 **Version 2.0.0** - High-performance data conversion service using Python + Polars to convert various data formats to optimized Parquet files. Designed for enterprise-scale datasets with advanced schema inference and transformation capabilities.
 
 ## Overview
 
-Illutix Tundra is a specialized conversion service that transforms data from multiple sources into optimized Parquet format for efficient storage and querying. The service handles files (CSV, TSV, Excel, JSON, Parquet), and SQL queries, processing them through Polars for maximum performance.
+Halatio Tundra is a specialized conversion service that transforms data from multiple sources into optimized Parquet format for efficient storage and querying. The service handles files (CSV, TSV, Excel, JSON, Parquet), and SQL queries, processing them through Polars for maximum performance.
 
 ## Features
 
@@ -26,7 +26,7 @@ Illutix Tundra is a specialized conversion service that transforms data from mul
 ## Architecture
 
 ```
-illutix-tundra/
+halatio-tundra/
 ├── app/
 │   ├── main.py                          # FastAPI app + routing + rate limiting
 │   ├── config.py                        # Environment configuration
@@ -52,7 +52,7 @@ Root endpoint - service status check
 ```json
 {
   "status": "running",
-  "service": "illutix-tundra",
+  "service": "halatio-tundra",
   "version": "2.0.0"
 }
 ```
@@ -64,7 +64,7 @@ Health check endpoint
 ```json
 {
   "status": "healthy",
-  "service": "illutix-tundra",
+  "service": "halatio-tundra",
   "version": "2.0.0"
 }
 ```
@@ -75,7 +75,7 @@ Service capabilities and limits
 **Response:**
 ```json
 {
-  "service": "illutix-tundra",
+  "service": "halatio-tundra",
   "version": "2.0.0",
   "capabilities": {
     "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
@@ -416,7 +416,7 @@ Test SQL database connection before saving credentials
   "suggestions": [
     "Verify the hostname and port are correct",
     "Check your database server is running",
-    "Ensure your firewall allows connections from Illutix IPs"
+    "Ensure your firewall allows connections from Halatio IPs"
   ]
 }
 ```
@@ -546,7 +546,7 @@ PARQUET_ROW_GROUP_SIZE=50000
 ### CORS Configuration
 
 CORS origins are automatically configured based on environment:
-- **Production**: `illutix.com`, `www.illutix.com`, `illutix.vercel.app`
+- **Production**: `halatio.com`, `www.halatio.com`, `halatio.vercel.app`
 - **Non-production**: Above + `http://localhost:3000`
 
 ---
@@ -702,8 +702,8 @@ The service uses automated CI/CD with GitHub Actions and Cloud Run. Every push t
 
 ## License
 
-Proprietary - Illutix Analytics Platform
+Proprietary - Halatio Analytics Platform
 
 ## Support
 
-For issues or questions, contact the Illutix development team.
+For issues or questions, contact the Halatio development team.
