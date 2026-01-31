@@ -217,6 +217,12 @@ class ConnectionTestResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(None, description="Connection metadata")
     error: Optional[str] = Field(None, description="Error code if failed")
 
+class ParquetCompression(str, Enum):
+    """Supported Parquet compression algorithms"""
+    snappy = "snappy"
+    zstd = "zstd"
+    none = "none"
+
 class DatabaseConversionRequest(BaseModel):
     """Request for database data conversion"""
     output_url: HttpUrl = Field(..., description="Signed PUT URL for Parquet output")
@@ -226,4 +232,5 @@ class DatabaseConversionRequest(BaseModel):
     table_name: Optional[str] = Field(None, description="Table name to extract (alternative to query)")
     partition_column: Optional[str] = Field(None, description="Column for parallel extraction")
     partition_num: int = Field(4, description="Number of parallel partitions", ge=1, le=16)
+    compression: ParquetCompression = Field(ParquetCompression.snappy, description="Parquet compression algorithm")
     webhook_url: Optional[HttpUrl] = Field(None, description="Webhook for progress updates")

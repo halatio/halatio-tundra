@@ -32,6 +32,9 @@ pymysql>=1.1.0
 # Retry logic
 tenacity>=8.2.3
 
+# Async utilities
+anyio>=4.0.0
+
 # Secrets management
 google-cloud-secret-manager>=2.18.0
 
