@@ -185,3 +185,45 @@ class ErrorResponse(BaseModel):
     request_id: Optional[str] = Field(None, description="Request ID for tracking")
     recoverable: bool = Field(True, description="Whether error is recoverable")
     suggestions: List[str] = Field(default_factory=list, description="Suggestions for fixing")
+
+# New models for database connectors (Phase 1)
+class ConnectorType(str, Enum):
+    """Supported connector types"""
+    postgresql = "postgresql"
+    mysql = "mysql"
+    bigquery = "bigquery"
+    snowflake = "snowflake"
+    google_sheets = "google_sheets"
+    stripe = "stripe"
+
+class DatabaseCredentials(BaseModel):
+    """Database connection credentials"""
+    host: str = Field(..., description="Database host")
+    port: Optional[int] = Field(None, description="Database port")
+    database: str = Field(..., description="Database name")
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+    ssl_mode: Optional[str] = Field("prefer", description="SSL mode")
+
+class ConnectionTestRequest(BaseModel):
+    """Request to test database connection"""
+    connector_type: ConnectorType = Field(..., description="Type of connector")
+    credentials: DatabaseCredentials = Field(..., description="Connection credentials")
+
+class ConnectionTestResponse(BaseModel):
+    """Response from connection test"""
+    success: bool = Field(..., description="Whether test succeeded")
+    message: str = Field(..., description="Success or error message")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Connection metadata")
+    error: Optional[str] = Field(None, description="Error code if failed")
+
+class DatabaseConversionRequest(BaseModel):
+    """Request for database data conversion"""
+    output_url: HttpUrl = Field(..., description="Signed PUT URL for Parquet output")
+    connector_type: ConnectorType = Field(..., description="Database type")
+    credentials_id: str = Field(..., description="Secret Manager credential ID")
+    query: Optional[str] = Field(None, description="SQL query to execute")
+    table_name: Optional[str] = Field(None, description="Table name to extract (alternative to query)")
+    partition_column: Optional[str] = Field(None, description="Column for parallel extraction")
+    partition_num: int = Field(4, description="Number of parallel partitions", ge=1, le=16)
+    webhook_url: Optional[HttpUrl] = Field(None, description="Webhook for progress updates")

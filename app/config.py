@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = "INFO"
 
+    # Google Cloud Project (for Secret Manager)
+    GCP_PROJECT_ID: str = Field(..., description="Google Cloud Project ID")
+
+    # Database connection pooling
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 3600
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
