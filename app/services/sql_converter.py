@@ -175,23 +175,38 @@ class SqlConverter:
     
     @staticmethod
     def _add_safety_limit(query: str, max_rows: Optional[int] = None) -> str:
-        """Add LIMIT clause to query if not present for safety"""
+        """
+        Add LIMIT clause to query using subquery wrapping for safety
+
+        This method wraps the user query in a subquery and applies LIMIT,
+        which is safer than string manipulation and works with:
+        - CTEs (WITH clauses)
+        - Comments
+        - Complex queries with UNION, GROUP BY, etc.
+        """
 
         if max_rows is None:
             max_rows = SqlConverter.DEFAULT_QUERY_LIMIT
 
-        trimmed_query = query.strip().lower()
-
-        # Check if LIMIT already exists
-        if 'limit' in trimmed_query:
-            return query  # Keep original query
-
-        # Add safety limit
         original_query = query.strip()
+
+        # Remove trailing semicolon if present
         if original_query.endswith(';'):
-            return f"{original_query[:-1]} LIMIT {max_rows};"
-        else:
-            return f"{original_query} LIMIT {max_rows}"
+            original_query = original_query[:-1]
+
+        # Check if LIMIT already exists in the query (case-insensitive)
+        trimmed_query_lower = original_query.lower()
+        if 'limit' in trimmed_query_lower:
+            # Query already has LIMIT, return as-is
+            return original_query
+
+        # Wrap in subquery to apply LIMIT safely
+        # This works with CTEs, comments, and complex queries
+        wrapped_query = f"SELECT * FROM ({original_query}) AS subq LIMIT {max_rows}"
+
+        logger.info(f"Applied safety LIMIT {max_rows} via subquery wrapping")
+
+        return wrapped_query
     
     @staticmethod
     def _extract_rows_from_response(data: Any) -> list:
