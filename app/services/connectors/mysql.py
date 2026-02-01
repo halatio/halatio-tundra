@@ -52,7 +52,7 @@ class MySQLConnector(BaseConnector):
         # Extract with ConnectorX
         read_params = {
             "query": query,
-            "connection_uri": self.connection_string,
+            "uri": self.connection_string,
             "engine": "connectorx"
         }
 
@@ -153,7 +153,7 @@ class MySQLConnector(BaseConnector):
             def _test_sync():
                 df = pl.read_database_uri(
                     query="SELECT 1 as test",
-                    connection_uri=self.connection_string,
+                    uri=self.connection_string,
                     engine="connectorx"
                 )
                 return len(df)
