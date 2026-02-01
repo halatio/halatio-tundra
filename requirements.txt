@@ -1,11 +1,50 @@
+# Core web framework
 fastapi
 uvicorn[standard]
+
+# Data processing
 polars[excel]
+pyarrow
+
+# Data validation and configuration
 pydantic
 pydantic-settings
+
+# File handling
 python-multipart
+
+# HTTP client
 httpx
+
+# Environment and security
 python-dotenv
 python-jose[cryptography]
+
+# Rate limiting
 slowapi
-pyarrow
+
+# Database connectors
+connectorx>=0.3.2
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+pymysql>=1.1.0
+
+# Retry logic
+tenacity>=8.2.3
+
+# Async utilities
+anyio>=4.0.0
+
+# Secrets management
+google-cloud-secret-manager>=2.18.0
+
+# YAML parsing for connector definitions
+pyyaml>=6.0
+
+# Google Sheets API
+google-auth>=2.27.0
+google-auth-oauthlib>=1.2.0
+google-api-python-client>=2.116.0
+
+# Stripe SDK
+stripe>=8.0.0
