@@ -2,11 +2,11 @@ swagger: "2.0"
 info:
   title: halatio-tundra-api
   description: Supabase JWT secured data conversion service
-  version: 1.0.0
+  version: 3.0.0
 
 schemes:
   - https
-  
+
 x-google-backend:
   address: https://halatio-tundra-440090509435.us-central1.run.app
   protocol: h2
@@ -20,6 +20,7 @@ paths:
       responses:
         '200':
           description: Root response
+
   /health:
     get:
       operationId: getHealth
@@ -36,6 +37,50 @@ paths:
                 type: string
               version:
                 type: string
+
+  /info:
+    get:
+      operationId: getInfo
+      security: []
+      responses:
+        '200':
+          description: Service capabilities and limits
+          schema:
+            type: object
+            properties:
+              service:
+                type: string
+              version:
+                type: string
+              capabilities:
+                type: object
+              limits:
+                type: object
+              features:
+                type: object
+
+  /connectors:
+    get:
+      operationId: getConnectors
+      security:
+        - supabase_jwt: []
+      responses:
+        '200':
+          description: List available database connectors
+          schema:
+            type: object
+            properties:
+              connectors:
+                type: array
+                items:
+                  type: string
+              count:
+                type: integer
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+
   /convert/{proxy}:
     get:
       operationId: convertGetProxy
@@ -56,6 +101,12 @@ paths:
 
     post:
       operationId: convertPostProxy
+      description: |
+        Convert data from various sources to Parquet format.
+        Supported endpoints:
+        - /convert/file - Convert files (CSV, TSV, Excel, JSON, Parquet)
+        - /convert/sql - Execute SQL query and convert results
+        - /convert/database - Extract from database using native connectors
       parameters:
         - name: proxy
           in: path
@@ -70,12 +121,79 @@ paths:
         - supabase_jwt: []
       responses:
         '200':
-          description: Proxy POST success
+          description: Conversion successful
+        '400':
+          description: Invalid request
         '401':
           description: Unauthorized
         '403':
           description: Forbidden
-          
+        '500':
+          description: Conversion failed
+
+  /test/{proxy}:
+    post:
+      operationId: testPostProxy
+      description: |
+        Test connections before saving credentials.
+        Supported endpoints:
+        - /test/database-connection - Test native database connectors
+        - /test/sql-connection - Test SQL API connections
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      security:
+        - supabase_jwt: []
+      responses:
+        '200':
+          description: Connection test result
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Connection test failed
+
+  /infer/{proxy}:
+    post:
+      operationId: inferPostProxy
+      description: |
+        Infer schema from data sources.
+        Supported endpoints:
+        - /infer/schema - Infer schema from file for validation
+      parameters:
+        - name: proxy
+          in: path
+          required: true
+          type: string
+        - name: body
+          in: body
+          required: true
+          schema:
+            type: object
+      security:
+        - supabase_jwt: []
+      responses:
+        '200':
+          description: Schema inference result
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '500':
+          description: Schema inference failed
+
 securityDefinitions:
   supabase_jwt:
     type: oauth2
