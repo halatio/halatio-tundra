@@ -7,17 +7,14 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from .config import settings
 from .models.conversionRequest import (
-    FileConversionRequest, SqlConversionRequest,
+    FileConversionRequest,
     ConversionResponse, HealthResponse,
     SchemaInferRequest, SchemaInferResponse,
-    SqlConnectionTestRequest, SqlConnectionTestResponse,
     ConnectionTestRequest, ConnectionTestResponse,
     DatabaseConversionRequest, ConversionMetadata
 )
 from .services.file_converter import FileConverter
-from .services.sql_converter import SqlConverter
 from .services.schema_inference import SchemaInferenceService
-from .services.sql_connection_test import SqlConnectionTestService
 from .services.secret_manager import get_secret_manager
 from .services.connectors.factory import ConnectorFactory
 from .utils import validate_signed_url, raise_http_exception, ValidationError, DatabaseError, StorageError
@@ -132,37 +129,6 @@ async def convert_file(request: Request, body: FileConversionRequest):
         logger.error(f"❌ File conversion failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
 
-
-@app.post("/convert/sql", response_model=ConversionResponse)
-@limiter.limit("10/minute")
-async def convert_sql_data(request: Request, body: SqlConversionRequest):
-    """Execute SQL query and convert results to parquet format"""
-
-    logger.info(f"💾 Converting SQL data: {body.sql_database}")
-
-    try:
-        # Convert options to dict if present
-        options = body.options.dict() if body.options else {}
-
-        result = await SqlConverter.convert(
-            endpoint=str(body.sql_endpoint),
-            database=body.sql_database,
-            query=body.sql_query,
-            output_url=str(body.output_url),
-            credentials_id=body.credentials_id,
-            options=options
-        )
-
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=result["error"])
-
-        logger.info(f"✅ SQL conversion complete: {result['metadata']['rows']} rows")
-        return ConversionResponse(**result)
-
-    except Exception as e:
-        logger.error(f"❌ SQL conversion failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"SQL conversion failed: {str(e)}")
-
 @app.post("/infer/schema", response_model=SchemaInferResponse)
 @limiter.limit("20/minute")
 async def infer_schema(request: Request, body: SchemaInferRequest):
@@ -182,33 +148,6 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
     except Exception as e:
         logger.error(f"❌ Schema inference failed: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Schema inference failed: {str(e)}")
-
-@app.post("/test/sql-connection", response_model=SqlConnectionTestResponse)
-@limiter.limit("20/minute")
-async def test_sql_connection(request: Request, body: SqlConnectionTestRequest):
-    """Test SQL database connection"""
-    logger.info(f"🔌 Testing SQL connection: {body.sql_database}")
-
-    try:
-        result = await SqlConnectionTestService.test_connection(
-            endpoint=str(body.sql_endpoint),
-            database=body.sql_database,
-            credentials=body.credentials,
-            database_type=body.database_type,
-            port=body.port,
-            ssl_mode=body.ssl_mode
-        )
-
-        if result["success"]:
-            logger.info(f"✅ SQL connection test successful")
-        else:
-            logger.warning(f"⚠️ SQL connection test failed: {result.get('error')}")
-
-        return SqlConnectionTestResponse(**result)
-
-    except Exception as e:
-        logger.error(f"❌ SQL connection test failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Connection test failed: {str(e)}")
 
 @app.post("/test/database-connection", response_model=ConnectionTestResponse)
 @limiter.limit("20/minute")
@@ -344,7 +283,7 @@ async def service_info():
             "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
             "output_format": "parquet",
             "max_file_size_mb": 500,
-            "supported_sources": ["file", "sql", "database"],
+            "supported_sources": ["file", "database"],
             "database_connectors": ConnectorFactory.list_connectors()
         },
         "limits": {

@@ -75,7 +75,7 @@ Get service capabilities and limits.
     "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
     "output_format": "parquet",
     "max_file_size_mb": 500,
-    "supported_sources": ["file", "sql", "database"],
+    "supported_sources": ["file", "database"],
     "database_connectors": ["postgresql", "mysql"]
   },
   "limits": {
@@ -350,77 +350,6 @@ Infer schema from file without converting (useful for validation).
 - `400 Bad Request`: Invalid format or sample_size
 - `502 Bad Gateway`: Source file unreachable
 - `500 Internal Server Error`: Schema inference failed
-
----
-
-### Legacy Endpoints
-
-#### `POST /convert/sql`
-**Note:** This endpoint exists for backwards compatibility. New integrations should use `/convert/database` instead.
-
-Execute SQL query via SQL API endpoint and convert results to Parquet.
-
-**Rate Limit:** 10 requests/minute
-
-**Request:**
-```json
-{
-  "output_url": "https://account.r2.cloudflarestorage.com/bucket/output.parquet?X-Amz-Signature=...",
-  "sql_endpoint": "https://sql-api.example.com/query",
-  "sql_database": "production",
-  "sql_query": "SELECT * FROM orders",
-  "credentials_id": "sql_api_creds",
-  "options": {
-    "database_type": "postgresql",
-    "port": 5432,
-    "ssl_mode": "prefer",
-    "query_timeout_seconds": 300,
-    "max_rows": 100000
-  }
-}
-```
-
-**Parameters:**
-- `output_url` (required): Signed PUT URL for Parquet output
-- `sql_endpoint` (required): SQL API endpoint URL
-- `sql_database` (required): Database name
-- `sql_query` (required): SQL query to execute
-- `credentials_id` (optional): Credential ID from vault
-- `options` (optional):
-  - `database_type` (optional): `"postgresql"` or `"mysql"`
-  - `port` (optional): Database port
-  - `ssl_mode` (optional): `"require"`, `"prefer"`, or `"disable"` (default: `"prefer"`)
-  - `query_timeout_seconds` (optional): Query timeout (default: 300)
-  - `max_rows` (optional): Maximum rows to fetch (default: 100000)
-
-**Response:** Same format as `/convert/database`
-
----
-
-#### `POST /test/sql-connection`
-**Note:** This endpoint exists for backwards compatibility. New integrations should use `/test/database-connection` instead.
-
-Test SQL API connection.
-
-**Rate Limit:** 20 requests/minute
-
-**Request:**
-```json
-{
-  "sql_endpoint": "https://sql-api.example.com/query",
-  "sql_database": "production",
-  "database_type": "postgresql",
-  "port": 5432,
-  "ssl_mode": "prefer",
-  "credentials": {
-    "type": "basic",
-    "username": "user",
-    "password": "pass"
-  }
-}
-```
-
-**Response:** Same format as `/test/database-connection`
 
 ---
 
