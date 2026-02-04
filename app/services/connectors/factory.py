@@ -4,15 +4,32 @@ from typing import Dict, Any
 from .base import BaseConnector
 from .postgresql import PostgreSQLConnector
 from .mysql import MySQLConnector
+from .sqlite import SQLiteConnector
+from .mssql import MSSQLConnector
+from .oracle import OracleConnector
 
 class ConnectorFactory:
     """Factory for creating connector instances"""
 
     # Map of connector types to classes
     CONNECTOR_TYPES = {
+        # Native connectors
         "postgresql": PostgreSQLConnector,
         "mysql": MySQLConnector,
-        # Will add more: bigquery, snowflake, google_sheets, stripe, etc.
+        "sqlite": SQLiteConnector,
+        "mssql": MSSQLConnector,
+        "oracle": OracleConnector,
+
+        # Protocol aliases (use existing connectors)
+        "mariadb": MySQLConnector,  # MariaDB uses MySQL protocol
+        "redshift": PostgreSQLConnector,  # Redshift uses PostgreSQL protocol
+
+        # Not yet implemented (planned for future):
+        # "bigquery": BigQueryConnector,
+        # "snowflake": SnowflakeConnector,
+        # "clickhouse": ClickHouseConnector,
+        # "google_sheets": GoogleSheetsConnector,
+        # "stripe": StripeConnector,
     }
 
     @classmethod
@@ -25,7 +42,7 @@ class ConnectorFactory:
         Create connector instance
 
         Args:
-            connector_type: Type of connector (postgresql, mysql, etc.)
+            connector_type: Type of connector (postgresql, mysql, sqlite, mssql, oracle, mariadb, redshift)
             credentials: Credential dictionary
 
         Returns:

@@ -191,6 +191,11 @@ class ConnectorType(str, Enum):
     """Supported connector types"""
     postgresql = "postgresql"
     mysql = "mysql"
+    sqlite = "sqlite"
+    mssql = "mssql"
+    oracle = "oracle"
+    mariadb = "mariadb"
+    redshift = "redshift"
     bigquery = "bigquery"
     snowflake = "snowflake"
     google_sheets = "google_sheets"
@@ -198,12 +203,13 @@ class ConnectorType(str, Enum):
 
 class DatabaseCredentials(BaseModel):
     """Database connection credentials"""
-    host: str = Field(..., description="Database host")
+    host: Optional[str] = Field(None, description="Database host (not required for SQLite)")
     port: Optional[int] = Field(None, description="Database port")
-    database: str = Field(..., description="Database name")
-    username: str = Field(..., description="Username")
-    password: str = Field(..., description="Password")
+    database: Optional[str] = Field(None, description="Database name (or file path for SQLite)")
+    username: Optional[str] = Field(None, description="Username (not required for SQLite)")
+    password: Optional[str] = Field(None, description="Password (not required for SQLite)")
     ssl_mode: Optional[str] = Field("prefer", description="SSL mode")
+    file_path: Optional[str] = Field(None, description="File path for SQLite databases")
 
 class ConnectionTestRequest(BaseModel):
     """Request to test database connection"""

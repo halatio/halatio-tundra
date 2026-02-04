@@ -1,61 +1,39 @@
 # Halatio Tundra
 
-**Version 3.0.0** - Production-grade data integration platform for converting files and database tables to optimized Parquet format.
+**Version 3.0.0** - Data conversion service for files and databases to Parquet format.
 
 ## Overview
 
-Halatio Tundra is a high-performance data conversion service designed for Google Cloud Run. It transforms data from multiple sources (files, databases, APIs) into optimized Parquet format using Polars and ConnectorX for maximum throughput.
+Halatio Tundra converts data from various sources (files, databases) into optimized Parquet format. It provides fast, parallel database extraction using ConnectorX and supports multiple file formats with schema inference.
 
-## Features
+## Quick Start
 
-### Database Connectors (v3.0)
-- **Native database support**: PostgreSQL, MySQL via ConnectorX (10-100x faster than row-by-row)
-- **Parallel extraction**: Partition large tables across multiple threads
-- **Secure credentials**: Google Secret Manager integration with caching
-- **Connection testing**: Validate credentials before saving
-- **Compression options**: Snappy, Zstd, or uncompressed output
-- **Async I/O**: CPU-bound operations run in thread pools to avoid blocking
+All endpoints accept/return JSON and require signed URLs for storage operations.
 
-### File Processing
-- **Multi-format support**: CSV, TSV, Excel, JSON, Parquet
-- **Schema inference**: Automatic type detection with format recognition
-- **Transformations**: Column mapping, type overrides, row skipping
-- **Streaming processing**: Memory-efficient handling of large files
+**Base URL:** `https://your-service.run.app`
 
-### Production Features
-- **Rate limiting**: Configurable per-endpoint limits
-- **Error classification**: Proper HTTP status codes (400/403/404/502/500)
-- **URL validation**: Signed URL security checks
-- **Deep health checks**: Secret Manager connectivity verification
-- **Comprehensive logging**: Structured logs for monitoring
+## Authentication & Credentials
 
-## Architecture
+### Database Credentials
+Database credentials are stored in Google Secret Manager for security:
 
-```
-app/
-├── main.py                      # FastAPI routes and error handling
-├── config.py                    # Environment configuration
-├── utils.py                     # URL validation and error classification
-├── models/
-│   └── conversionRequest.py     # Pydantic models
-└── services/
-    ├── file_converter.py        # File to Parquet conversion
-    ├── sql_converter.py         # SQL query execution
-    ├── schema_inference.py      # Schema detection
-    ├── secret_manager.py        # Google Secret Manager client
-    └── connectors/              # Database connectors
-        ├── base.py              # BaseConnector interface
-        ├── postgresql.py        # PostgreSQL connector
-        ├── mysql.py             # MySQL connector
-        └── factory.py           # Connector factory
-```
+1. **Test connection** with temporary credentials using `/test/database-connection`
+2. **Store credentials** in Secret Manager (external to this service)
+3. **Reference by ID** using `credentials_id` in conversion requests
+4. Credentials are cached for 1 hour
+
+### Signed URLs
+All `output_url` parameters must be signed PUT URLs from one of:
+- `r2.cloudflarestorage.com` (Cloudflare R2)
+- `s3.amazonaws.com` (AWS S3)
+- `storage.googleapis.com` (Google Cloud Storage)
 
 ## API Endpoints
 
-### Health Checks
+### Health & Info
 
 #### `GET /health`
-Basic health check for load balancer
+Basic health check for load balancers.
 
 **Response:**
 ```json
@@ -66,8 +44,10 @@ Basic health check for load balancer
 }
 ```
 
+---
+
 #### `GET /health/deep`
-Deep health check including Secret Manager connectivity
+Health check with Secret Manager connectivity verification.
 
 **Response:**
 ```json
@@ -81,12 +61,63 @@ Deep health check including Secret Manager connectivity
 }
 ```
 
+---
+
+#### `GET /info`
+Get service capabilities and limits.
+
+**Response:**
+```json
+{
+  "service": "halatio-tundra",
+  "version": "3.0.0",
+  "capabilities": {
+    "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
+    "output_format": "parquet",
+    "max_file_size_mb": 500,
+    "supported_sources": ["file", "database"],
+    "database_connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"]
+  },
+  "limits": {
+    "max_processing_time_minutes": 10,
+    "max_memory_usage_gb": 2,
+    "max_rows_processed": 10000000
+  }
+}
+```
+
+---
+
+#### `GET /connectors`
+List available database connector types.
+
+**Response:**
+```json
+{
+  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"],
+  "count": 7
+}
+```
+
+**Supported Databases:**
+- **PostgreSQL** - Native connector via ConnectorX
+- **MySQL** - Native connector via ConnectorX
+- **SQLite** - File-based database connector
+- **MS SQL Server** (`mssql`) - Microsoft SQL Server connector
+- **Oracle** - Oracle Database connector
+- **MariaDB** - Uses MySQL protocol (alias for mysql connector)
+- **Redshift** - Uses PostgreSQL protocol (alias for postgresql connector)
+
+**Note:** BigQuery, Snowflake, ClickHouse, Google Sheets, and Stripe connectors are planned but not yet implemented.
+
+---
+
 ### Database Operations
 
 #### `POST /test/database-connection`
-Test database connection before saving credentials
+Test database connection before saving credentials.
 
-**Rate Limit:** 20/minute
+**Rate Limit:** 20 requests/minute
 
 **Request:**
 ```json
@@ -103,7 +134,37 @@ Test database connection before saving credentials
 }
 ```
 
-**Response (200 OK):**
+**Parameters:**
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
+- `credentials` (required):
+  - `host` (optional): Database hostname (not required for SQLite)
+  - `port` (optional): Database port (defaults: PostgreSQL/Redshift=5432, MySQL/MariaDB=3306, MSSQL=1433, Oracle=1521)
+  - `database` (optional): Database name (or file path for SQLite)
+  - `username` (optional): Database username (not required for SQLite)
+  - `password` (optional): Database password (not required for SQLite)
+  - `ssl_mode` (optional): `"require"`, `"prefer"`, or `"disable"` (default: `"prefer"`)
+  - `file_path` (optional): File path for SQLite databases (alternative to using `database` field)
+
+**SQLite Example:**
+```json
+{
+  "connector_type": "sqlite",
+  "credentials": {
+    "file_path": "/path/to/database.db"
+  }
+}
+```
+Or using `database` field:
+```json
+{
+  "connector_type": "sqlite",
+  "credentials": {
+    "database": "/path/to/database.db"
+  }
+}
+```
+
+**Success Response (200):**
 ```json
 {
   "success": true,
@@ -115,26 +176,28 @@ Test database connection before saving credentials
 }
 ```
 
-**Response (400 Bad Request):**
+**Error Response (400):**
 ```json
 {
   "success": false,
   "error": "connection_failed",
-  "message": "connection refused"
+  "message": "connection refused: check host and port"
 }
 ```
 
-#### `POST /convert/database`
-Extract database table/query to Parquet
+---
 
-**Rate Limit:** 10/minute
+#### `POST /convert/database`
+Extract database table or query results to Parquet.
+
+**Rate Limit:** 10 requests/minute
 
 **Request:**
 ```json
 {
-  "output_url": "https://account.r2.cloudflarestorage.com/bucket/file.parquet?X-Amz-...",
+  "output_url": "https://account.r2.cloudflarestorage.com/bucket/output.parquet?X-Amz-Signature=...",
   "connector_type": "postgresql",
-  "credentials_id": "postgres_prod_db_123",
+  "credentials_id": "postgres_prod_readonly",
   "query": "SELECT * FROM customers WHERE created_at > '2024-01-01'",
   "partition_column": "id",
   "partition_num": 8,
@@ -142,17 +205,23 @@ Extract database table/query to Parquet
 }
 ```
 
-**Request Fields:**
-- `output_url` (required): Signed PUT URL for R2/S3/GCS storage
-- `connector_type` (required): `postgresql` or `mysql`
-- `credentials_id` (required): Secret Manager secret ID
+**Parameters:**
+- `output_url` (required): Signed PUT URL for Parquet output
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
+- `credentials_id` (required): Secret Manager secret ID containing database credentials
 - `query` (optional): SQL query to execute
-- `table_name` (optional): Table name (alternative to query, validated for SQL injection)
-- `partition_column` (optional): Column for parallel extraction
-- `partition_num` (optional): Number of partitions (1-16, default: 4)
-- `compression` (optional): `snappy`, `zstd`, or `none` (default: snappy)
+- `table_name` (optional): Table name to extract (alternative to `query`, validated for SQL injection)
+- `partition_column` (optional): Column name for parallel extraction (not supported for SQLite)
+- `partition_num` (optional): Number of parallel partitions (1-16, default: 4, not supported for SQLite)
+- `compression` (optional): `"snappy"` (default, fastest), `"zstd"` (better compression), or `"none"`
 
-**Response (200 OK):**
+**Notes:**
+- Must specify either `query` OR `table_name`, not both
+- SQLite does not support parallel partitioning - `partition_column` and `partition_num` will be ignored
+- MariaDB uses MySQL protocol internally
+- Redshift uses PostgreSQL protocol internally
+
+**Success Response (200):**
 ```json
 {
   "success": true,
@@ -164,7 +233,7 @@ Extract database table/query to Parquet
     "source_type": "database",
     "connection_info": {
       "connector_type": "postgresql",
-      "query": "SELECT * FROM customers...",
+      "query": "SELECT * FROM customers WHERE...",
       "partitioned": true,
       "compression": "snappy"
     }
@@ -173,292 +242,306 @@ Extract database table/query to Parquet
 ```
 
 **Error Responses:**
-- `400`: Invalid table name, missing required fields
-- `403`: Secret Manager permission denied
-- `404`: Secret not found
-- `502`: Database unreachable, query timeout
-- `500`: Internal server error
+- `400 Bad Request`: Invalid table name, missing required fields, or both query and table_name specified
+- `403 Forbidden`: Secret Manager permission denied
+- `404 Not Found`: Secret or table not found
+- `502 Bad Gateway`: Database unreachable, connection refused, or query timeout
+- `500 Internal Server Error`: Unexpected server error
 
-#### `GET /connectors`
-List available database connectors
+---
 
-**Response:**
-```json
-{
-  "connectors": ["postgresql", "mysql"],
-  "count": 2
-}
-```
+### Database Connector Details
+
+#### PostgreSQL
+- **Default Port:** 5432
+- **Connection String:** `postgresql://user:pass@host:5432/database`
+- **Parallel Extraction:** ✅ Supported
+- **SSL Modes:** require, prefer, disable
+
+#### MySQL
+- **Default Port:** 3306
+- **Connection String:** `mysql://user:pass@host:3306/database`
+- **Parallel Extraction:** ✅ Supported
+- **SSL Modes:** require, prefer, disable
+
+#### SQLite
+- **Default Port:** N/A (file-based)
+- **Connection String:** `sqlite:///path/to/file.db`
+- **Parallel Extraction:** ❌ Not supported
+- **Credentials:** Only requires `file_path` or `database` field (no host/username/password)
+- **Note:** Use absolute paths for reliability
+
+#### MS SQL Server
+- **Default Port:** 1433
+- **Connection String:** `mssql://user:pass@host:1433/database`
+- **Parallel Extraction:** ✅ Supported
+- **Also works for:** Azure SQL Database
+
+#### Oracle
+- **Default Port:** 1521
+- **Connection String:** `oracle://user:pass@host:1521/service_name`
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Uses `SELECT 1 FROM DUAL` for connection tests
+
+#### MariaDB
+- **Default Port:** 3306
+- **Connection String:** `mysql://user:pass@host:3306/database` (uses MySQL protocol)
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Internally uses MySQL connector
+
+#### Redshift
+- **Default Port:** 5439
+- **Connection String:** `postgresql://user:pass@host:5439/database` (uses PostgreSQL protocol)
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Internally uses PostgreSQL connector
+
+---
 
 ### File Operations
 
 #### `POST /convert/file`
-Convert file to Parquet
+Convert file from various formats to Parquet.
 
-See previous documentation for full details. Key changes in v3.0:
-- Enhanced error classification (400/502/500)
-- URL validation for signed URLs
-- Improved async handling
+**Rate Limit:** 10 requests/minute
+
+**Request:**
+```json
+{
+  "source_url": "https://account.r2.cloudflarestorage.com/bucket/source.csv?X-Amz-Signature=...",
+  "output_url": "https://account.r2.cloudflarestorage.com/bucket/output.parquet?X-Amz-Signature=...",
+  "format": "csv",
+  "options": {
+    "column_mapping": {
+      "old_name": "new_name"
+    },
+    "type_overrides": {
+      "column_name": "Int64"
+    },
+    "skip_rows": [0, 1],
+    "encoding": "utf-8",
+    "delimiter": ",",
+    "sheet_name": "Sheet1",
+    "sheet_index": 0
+  }
+}
+```
+
+**Parameters:**
+- `source_url` (required): Signed GET URL for source file
+- `output_url` (required): Signed PUT URL for Parquet output
+- `format` (required): `"csv"`, `"tsv"`, `"excel"`, `"json"`, or `"parquet"`
+- `options` (optional):
+  - `column_mapping` (optional): Rename columns `{"old_name": "new_name"}`
+  - `type_overrides` (optional): Override column types `{"column": "Int64"}` (Polars types)
+  - `skip_rows` (optional): Row indices to skip `[0, 1, 5]`
+  - `encoding` (optional): Force encoding (default: auto-detect)
+  - `delimiter` (optional): Force delimiter for CSV (default: auto-detect)
+  - `sheet_name` (optional): Excel sheet name to convert
+  - `sheet_index` (optional): Excel sheet index (0-based)
+
+**Success Response (200):**
+```json
+{
+  "success": true,
+  "metadata": {
+    "rows": 50000,
+    "columns": 12,
+    "file_size_mb": 8.5,
+    "processing_time_seconds": 3.2,
+    "source_type": "file",
+    "rows_skipped": 2,
+    "warnings": ["Column 'price' had 5 null values"]
+  }
+}
+```
+
+**Error Responses:**
+- `400 Bad Request`: Invalid format, missing required fields, or malformed file
+- `502 Bad Gateway`: Source file unreachable or storage upload failed
+- `500 Internal Server Error`: Conversion failed or unexpected error
+
+---
 
 #### `POST /infer/schema`
-Infer schema from file for validation
+Infer schema from file without converting (useful for validation).
 
-See previous documentation for full details.
+**Rate Limit:** 20 requests/minute
 
-## Database Connectors
-
-### PostgreSQL
-
-**Features:**
-- Zero-copy extraction via ConnectorX
-- Parallel loading with partition support
-- Automatic retry with exponential backoff
-- SQL injection protection for table names
-- Connection string validation
-
-**Parallel Extraction Example:**
+**Request:**
 ```json
 {
-  "table_name": "large_table",
-  "partition_column": "id",
-  "partition_num": 8
+  "source_url": "https://account.r2.cloudflarestorage.com/bucket/data.csv?X-Amz-Signature=...",
+  "format": "csv",
+  "sample_size": 1000
 }
 ```
 
-This splits the table into 8 partitions based on `id` column ranges, extracting in parallel.
+**Parameters:**
+- `source_url` (required): Signed GET URL for source file
+- `format` (required): `"csv"`, `"tsv"`, `"excel"`, `"json"`, or `"parquet"`
+- `sample_size` (optional): Number of rows to analyze (1-10000, default: 1000)
 
-### MySQL
-
-Same features as PostgreSQL with MySQL-specific connection handling.
-
-## Compression Options
-
-### Snappy (Default)
-- Fastest compression
-- 2-4x compression ratio
-- Best for general use
-
-### Zstd
-- Better compression ratio
-- Slightly slower
-- Best for archival/cold storage
-
-### None
-- No compression
-- Fastest writes
-- Largest file size
-- Best for immediate processing
-
-**Usage:**
+**Success Response (200):**
 ```json
 {
-  "compression": "zstd"
-}
-```
-
-## Security
-
-### Credential Storage
-
-Credentials are stored in Google Secret Manager:
-
-1. Test connection with temporary credentials
-2. Store credentials in Secret Manager
-3. Use `credentials_id` for subsequent conversions
-4. Credentials cached for 1 hour (configurable)
-
-### URL Validation
-
-Signed URLs are validated against allowed domains:
-- `r2.cloudflarestorage.com`
-- `s3.amazonaws.com`
-- `storage.googleapis.com`
-
-This prevents proxy abuse where malicious users provide URLs to unauthorized storage.
-
-### SQL Injection Protection
-
-Table names are validated with regex pattern `^[a-zA-Z0-9_\.]+$` to prevent injection attacks.
-
-## Configuration
-
-### Environment Variables
-
-```bash
-# Required
-ENV=production
-GCP_PROJECT_ID=your-project-id
-
-# Processing limits
-MAX_FILE_SIZE_MB=500
-MAX_PROCESSING_TIME_MINUTES=10
-MAX_MEMORY_USAGE_GB=2
-
-# Database connection pooling
-DB_POOL_SIZE=5
-DB_MAX_OVERFLOW=10
-DB_POOL_RECYCLE_SECONDS=3600
-
-# Parquet defaults
-PARQUET_COMPRESSION=snappy
-PARQUET_ROW_GROUP_SIZE=50000
-```
-
-### Google Cloud Setup
-
-**Service Account Permissions:**
-```bash
-roles/secretmanager.secretAccessor
-```
-
-**Authentication:**
-```bash
-# Local development
-gcloud auth application-default login
-
-# Cloud Run (automatic)
-# Uses workload identity
-```
-
-## Development
-
-### Local Setup
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set environment
-export ENV=dev
-export GCP_PROJECT_ID=your-project-id
-
-# Run service
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8080
-```
-
-### Testing
-
-```bash
-# Health check
-curl http://localhost:8080/health
-
-# Deep health check
-curl http://localhost:8080/health/deep
-
-# List connectors
-curl http://localhost:8080/connectors
-
-# Test database connection
-curl -X POST http://localhost:8080/test/database-connection \
-  -H "Content-Type: application/json" \
-  -d '{
-    "connector_type": "postgresql",
-    "credentials": {
-      "host": "localhost",
-      "port": 5432,
-      "database": "test",
-      "username": "user",
-      "password": "pass"
+  "success": true,
+  "schema": {
+    "columns": [
+      {
+        "name": "customer_id",
+        "inferred_type": "Int64",
+        "nullable": false,
+        "null_count": 0,
+        "unique_count": 1000,
+        "sample_values": [1, 2, 3, 4, 5],
+        "min_value": 1,
+        "max_value": 1000
+      },
+      {
+        "name": "email",
+        "inferred_type": "Utf8",
+        "detected_format": "email",
+        "nullable": true,
+        "null_count": 5,
+        "unique_count": 995,
+        "sample_values": ["user@example.com", "test@test.com"]
+      }
+    ],
+    "total_rows": 1000,
+    "total_columns": 2,
+    "file_size_bytes": 45000
+  },
+  "sample_data": [
+    {"customer_id": 1, "email": "user@example.com"},
+    {"customer_id": 2, "email": "test@test.com"}
+  ],
+  "warnings": [
+    {
+      "column": "email",
+      "issue": "null_values",
+      "message": "Column has 5 null values",
+      "affected_rows": [10, 25, 30, 45, 67]
     }
-  }'
+  ]
+}
 ```
 
-## Deployment
+**Error Responses:**
+- `400 Bad Request`: Invalid format or sample_size
+- `502 Bad Gateway`: Source file unreachable
+- `500 Internal Server Error`: Schema inference failed
 
-### Cloud Run Configuration
-
-```yaml
-CPU: 1 vCPU
-Memory: 2 GB
-Timeout: 600 seconds
-Concurrency: 5
-Min instances: 0
-Max instances: 10
-```
-
-### Environment Variables
-
-Set in Cloud Run:
-```bash
-ENV=production
-GCP_PROJECT_ID=your-project-id
-```
-
-## Performance
-
-### Database Extraction Benchmarks
-
-| Rows | Columns | Partitions | Time | Throughput |
-|------|---------|------------|------|------------|
-| 1M | 10 | 1 | 15s | 66K rows/s |
-| 1M | 10 | 4 | 5s | 200K rows/s |
-| 1M | 10 | 8 | 3s | 333K rows/s |
-| 10M | 20 | 8 | 45s | 222K rows/s |
-
-*Benchmarks with PostgreSQL on Cloud SQL, standard instance*
-
-### Optimization Tips
-
-1. **Use partitioning** for tables > 100K rows
-2. **Choose snappy compression** for balanced performance
-3. **Specify column subset** in queries instead of `SELECT *`
-4. **Index partition columns** in database for faster range scans
+---
 
 ## Error Handling
 
+All endpoints return consistent error responses:
+
+```json
+{
+  "detail": "Error message describing what went wrong"
+}
+```
+
 ### HTTP Status Codes
+- `200 OK`: Request succeeded
+- `400 Bad Request`: Invalid input (malformed request, invalid table name, missing required fields)
+- `403 Forbidden`: Permission denied (Secret Manager access)
+- `404 Not Found`: Resource not found (secret, table, file)
+- `429 Too Many Requests`: Rate limit exceeded
+- `502 Bad Gateway`: Upstream service error (database unreachable, storage unavailable)
+- `500 Internal Server Error`: Unexpected server error
 
-- `400`: User input errors (invalid table name, missing fields)
-- `403`: Permission denied (Secret Manager access)
-- `404`: Resource not found (secret, table)
-- `502`: Upstream errors (database unreachable, storage unavailable)
-- `500`: Internal errors (code bugs, unexpected failures)
+### Common Error Examples
 
-### Error Response Format
-
+**Invalid table name (SQL injection attempt):**
 ```json
 {
   "detail": "Invalid table name: 'users; DROP TABLE users'. Table names must contain only alphanumeric characters, underscores, and dots."
 }
 ```
 
-## Limitations
+**Secret not found:**
+```json
+{
+  "detail": "Secret not found: postgres_prod_readonly"
+}
+```
 
-| Resource | Limit | Configurable |
-|----------|-------|--------------|
-| File size | 500 MB | Yes |
-| Processing time | 10 minutes | Yes (Cloud Run) |
-| Memory | 2 GB | Yes (Cloud Run) |
-| Concurrent requests | 5 per instance | Yes (Cloud Run) |
-| Secret cache TTL | 1 hour | Yes |
-| Max partitions | 16 | Yes |
+**Database unreachable:**
+```json
+{
+  "detail": "Database connection failed: connection refused"
+}
+```
 
-## Version History
+---
 
-### v3.0.0 (Current)
-- Native database connectors (PostgreSQL, MySQL)
-- Google Secret Manager integration
-- Async thread pool for CPU-bound operations
-- Compression options (snappy/zstd/none)
-- URL validation for signed URLs
-- SQL injection protection
-- Improved error classification
-- Deep health checks
+## Performance Tips
 
-### v2.0.0
-- Excel support
-- Schema inference
-- Column transformations
-- SQL connection testing
+### Database Extraction
+1. **Use partitioning** for tables with >100K rows to enable parallel extraction
+2. **Specify partition_column** with an indexed column for best performance
+3. **Choose appropriate partition_num** (1-16): 4-8 partitions work well for most datasets
+4. **Use column subsets** in queries instead of `SELECT *` to reduce transfer size
+5. **Use snappy compression** for balanced performance (default)
 
-### v1.0.0
-- Initial release
-- File conversion (CSV, JSON, TSV)
+### Compression Options
+| Compression | Speed | Ratio | Best For |
+|------------|-------|-------|----------|
+| `snappy` (default) | Fastest | 2-4x | General use, real-time processing |
+| `zstd` | Slower | 4-8x | Archival, cold storage |
+| `none` | Fastest write | 1x | Immediate downstream processing |
 
-## License
+### Example: Parallel Extraction
+```json
+{
+  "table_name": "large_orders_table",
+  "partition_column": "order_id",
+  "partition_num": 8,
+  "compression": "snappy"
+}
+```
+This splits the table into 8 chunks based on `order_id` ranges and extracts them in parallel, typically 4-8x faster than single-threaded extraction.
 
-Proprietary - Halatio Analytics Platform
+---
+
+## Security
+
+### SQL Injection Protection
+- Table names are validated against pattern: `^[a-zA-Z0-9_\.]+$`
+- Queries are parameterized when using `query` parameter
+- Use `table_name` for simple table extraction when possible
+
+### URL Validation
+- Only signed URLs from approved domains are accepted
+- Prevents abuse where malicious users provide URLs to unauthorized storage
+
+### Credential Management
+- Never send credentials in API calls (except for connection testing)
+- Store credentials in Google Secret Manager
+- Reference credentials by ID in conversion requests
+- Credentials are cached for 1 hour to reduce Secret Manager API calls
+
+---
+
+## Limits & Quotas
+
+| Resource | Default Limit | Configurable |
+|----------|---------------|--------------|
+| Max file size | 500 MB | Yes (env var) |
+| Max processing time | 10 minutes | Yes (Cloud Run) |
+| Max memory | 2 GB | Yes (Cloud Run) |
+| Max rows processed | 10 million | Yes (env var) |
+| Max partitions | 16 | Yes (in code) |
+| Rate limit: health | None | No |
+| Rate limit: conversions | 10/min | Yes (in code) |
+| Rate limit: tests | 20/min | Yes (in code) |
+
+---
 
 ## Support
 
 For issues or questions, contact the Halatio development team.
+
+**License:** Proprietary - Halatio Analytics Platform
