@@ -76,7 +76,7 @@ Get service capabilities and limits.
     "output_format": "parquet",
     "max_file_size_mb": 500,
     "supported_sources": ["file", "database"],
-    "database_connectors": ["postgresql", "mysql"]
+    "database_connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"]
   },
   "limits": {
     "max_processing_time_minutes": 10,
@@ -94,12 +94,21 @@ List available database connector types.
 **Response:**
 ```json
 {
-  "connectors": ["postgresql", "mysql"],
-  "count": 2
+  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"],
+  "count": 7
 }
 ```
 
-**Note:** BigQuery, Snowflake, Google Sheets, and Stripe connectors are planned but not yet implemented.
+**Supported Databases:**
+- **PostgreSQL** - Native connector via ConnectorX
+- **MySQL** - Native connector via ConnectorX
+- **SQLite** - File-based database connector
+- **MS SQL Server** (`mssql`) - Microsoft SQL Server connector
+- **Oracle** - Oracle Database connector
+- **MariaDB** - Uses MySQL protocol (alias for mysql connector)
+- **Redshift** - Uses PostgreSQL protocol (alias for postgresql connector)
+
+**Note:** BigQuery, Snowflake, ClickHouse, Google Sheets, and Stripe connectors are planned but not yet implemented.
 
 ---
 
@@ -126,14 +135,34 @@ Test database connection before saving credentials.
 ```
 
 **Parameters:**
-- `connector_type` (required): `"postgresql"` or `"mysql"`
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
 - `credentials` (required):
-  - `host` (required): Database hostname
-  - `port` (optional): Database port (defaults: PostgreSQL=5432, MySQL=3306)
-  - `database` (required): Database name
-  - `username` (required): Database username
-  - `password` (required): Database password
+  - `host` (optional): Database hostname (not required for SQLite)
+  - `port` (optional): Database port (defaults: PostgreSQL/Redshift=5432, MySQL/MariaDB=3306, MSSQL=1433, Oracle=1521)
+  - `database` (optional): Database name (or file path for SQLite)
+  - `username` (optional): Database username (not required for SQLite)
+  - `password` (optional): Database password (not required for SQLite)
   - `ssl_mode` (optional): `"require"`, `"prefer"`, or `"disable"` (default: `"prefer"`)
+  - `file_path` (optional): File path for SQLite databases (alternative to using `database` field)
+
+**SQLite Example:**
+```json
+{
+  "connector_type": "sqlite",
+  "credentials": {
+    "file_path": "/path/to/database.db"
+  }
+}
+```
+Or using `database` field:
+```json
+{
+  "connector_type": "sqlite",
+  "credentials": {
+    "database": "/path/to/database.db"
+  }
+}
+```
 
 **Success Response (200):**
 ```json
@@ -178,15 +207,19 @@ Extract database table or query results to Parquet.
 
 **Parameters:**
 - `output_url` (required): Signed PUT URL for Parquet output
-- `connector_type` (required): `"postgresql"` or `"mysql"`
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
 - `credentials_id` (required): Secret Manager secret ID containing database credentials
 - `query` (optional): SQL query to execute
 - `table_name` (optional): Table name to extract (alternative to `query`, validated for SQL injection)
-- `partition_column` (optional): Column name for parallel extraction (improves performance for large tables)
-- `partition_num` (optional): Number of parallel partitions (1-16, default: 4)
+- `partition_column` (optional): Column name for parallel extraction (not supported for SQLite)
+- `partition_num` (optional): Number of parallel partitions (1-16, default: 4, not supported for SQLite)
 - `compression` (optional): `"snappy"` (default, fastest), `"zstd"` (better compression), or `"none"`
 
-**Note:** Must specify either `query` OR `table_name`, not both.
+**Notes:**
+- Must specify either `query` OR `table_name`, not both
+- SQLite does not support parallel partitioning - `partition_column` and `partition_num` will be ignored
+- MariaDB uses MySQL protocol internally
+- Redshift uses PostgreSQL protocol internally
 
 **Success Response (200):**
 ```json
@@ -214,6 +247,53 @@ Extract database table or query results to Parquet.
 - `404 Not Found`: Secret or table not found
 - `502 Bad Gateway`: Database unreachable, connection refused, or query timeout
 - `500 Internal Server Error`: Unexpected server error
+
+---
+
+### Database Connector Details
+
+#### PostgreSQL
+- **Default Port:** 5432
+- **Connection String:** `postgresql://user:pass@host:5432/database`
+- **Parallel Extraction:** ✅ Supported
+- **SSL Modes:** require, prefer, disable
+
+#### MySQL
+- **Default Port:** 3306
+- **Connection String:** `mysql://user:pass@host:3306/database`
+- **Parallel Extraction:** ✅ Supported
+- **SSL Modes:** require, prefer, disable
+
+#### SQLite
+- **Default Port:** N/A (file-based)
+- **Connection String:** `sqlite:///path/to/file.db`
+- **Parallel Extraction:** ❌ Not supported
+- **Credentials:** Only requires `file_path` or `database` field (no host/username/password)
+- **Note:** Use absolute paths for reliability
+
+#### MS SQL Server
+- **Default Port:** 1433
+- **Connection String:** `mssql://user:pass@host:1433/database`
+- **Parallel Extraction:** ✅ Supported
+- **Also works for:** Azure SQL Database
+
+#### Oracle
+- **Default Port:** 1521
+- **Connection String:** `oracle://user:pass@host:1521/service_name`
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Uses `SELECT 1 FROM DUAL` for connection tests
+
+#### MariaDB
+- **Default Port:** 3306
+- **Connection String:** `mysql://user:pass@host:3306/database` (uses MySQL protocol)
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Internally uses MySQL connector
+
+#### Redshift
+- **Default Port:** 5439
+- **Connection String:** `postgresql://user:pass@host:5439/database` (uses PostgreSQL protocol)
+- **Parallel Extraction:** ✅ Supported
+- **Note:** Internally uses PostgreSQL connector
 
 ---
 
