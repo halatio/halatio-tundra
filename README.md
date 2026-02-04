@@ -1,10 +1,10 @@
 # Halatio Tundra
 
-**Version 3.0.0** - Data conversion service for files and databases to Parquet format.
+**Version 4.0.0** - Data conversion service for files and databases to Parquet format.
 
 ## Overview
 
-Halatio Tundra converts data from various sources (files, databases) into optimized Parquet format. It provides fast, parallel database extraction using ConnectorX and supports multiple file formats with schema inference.
+Halatio Tundra converts data from various sources (files, databases) into optimized Parquet format. Built on **DuckDB**, it provides unified SQL query engine, direct R2/S3 writes, and efficient memory management. Supports multiple database types and file formats with automatic schema inference.
 
 ## Quick Start
 
@@ -40,7 +40,7 @@ Basic health check for load balancers.
 {
   "status": "healthy",
   "service": "halatio-tundra",
-  "version": "3.0.0"
+  "version": "4.0.0"
 }
 ```
 
@@ -54,7 +54,7 @@ Health check with Secret Manager connectivity verification.
 {
   "status": "healthy",
   "service": "halatio-tundra",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "checks": {
     "secret_manager": "healthy"
   }
@@ -70,17 +70,19 @@ Get service capabilities and limits.
 ```json
 {
   "service": "halatio-tundra",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "capabilities": {
     "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
     "output_format": "parquet",
     "max_file_size_mb": 500,
     "supported_sources": ["file", "database"],
-    "database_connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"]
+    "database_connectors": ["postgresql", "mysql", "sqlite", "mssql", "mariadb", "redshift"],
+    "query_engine": "duckdb",
+    "direct_r2_write": true
   },
   "limits": {
     "max_processing_time_minutes": 10,
-    "max_memory_usage_gb": 2,
+    "max_memory_usage_gb": 6,
     "max_rows_processed": 10000000
   }
 }
@@ -94,21 +96,20 @@ List available database connector types.
 **Response:**
 ```json
 {
-  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"],
-  "count": 7
+  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "mariadb", "redshift"],
+  "count": 6
 }
 ```
 
-**Supported Databases:**
-- **PostgreSQL** - Native connector via ConnectorX
-- **MySQL** - Native connector via ConnectorX
-- **SQLite** - File-based database connector
-- **MS SQL Server** (`mssql`) - Microsoft SQL Server connector
-- **Oracle** - Oracle Database connector
+**Supported Databases (via DuckDB):**
+- **PostgreSQL** - Native DuckDB postgres scanner
+- **MySQL** - Native DuckDB mysql scanner
+- **SQLite** - Native DuckDB support
+- **MS SQL Server** (`mssql`) - DuckDB ADBC driver (requires `dbc add mssql`)
 - **MariaDB** - Uses MySQL protocol (alias for mysql connector)
 - **Redshift** - Uses PostgreSQL protocol (alias for postgresql connector)
 
-**Note:** BigQuery, Snowflake, ClickHouse, Google Sheets, and Stripe connectors are planned but not yet implemented.
+**Note:** Snowflake, BigQuery, Databricks, and Trino support is possible via ADBC but not yet implemented.
 
 ---
 
@@ -135,14 +136,13 @@ Test database connection before saving credentials.
 ```
 
 **Parameters:**
-- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"mariadb"`, or `"redshift"`
 - `credentials` (required):
   - `host` (optional): Database hostname (not required for SQLite)
-  - `port` (optional): Database port (defaults: PostgreSQL/Redshift=5432, MySQL/MariaDB=3306, MSSQL=1433, Oracle=1521)
+  - `port` (optional): Database port (defaults: PostgreSQL/Redshift=5432, MySQL/MariaDB=3306, MSSQL=1433)
   - `database` (optional): Database name (or file path for SQLite)
   - `username` (optional): Database username (not required for SQLite)
   - `password` (optional): Database password (not required for SQLite)
-  - `ssl_mode` (optional): `"require"`, `"prefer"`, or `"disable"` (default: `"prefer"`)
   - `file_path` (optional): File path for SQLite databases (alternative to using `database` field)
 
 **SQLite Example:**
@@ -170,8 +170,9 @@ Or using `database` field:
   "success": true,
   "message": "Connection successful",
   "metadata": {
-    "database_type": "PostgreSQL",
-    "rows_returned": 1
+    "database_type": "PostgreSQL (DuckDB)",
+    "engine": "duckdb-postgres-scanner",
+    "test_rows": 1
   }
 }
 ```
@@ -199,27 +200,25 @@ Extract database table or query results to Parquet.
   "connector_type": "postgresql",
   "credentials_id": "postgres_prod_readonly",
   "query": "SELECT * FROM customers WHERE created_at > '2024-01-01'",
-  "partition_column": "id",
-  "partition_num": 8,
-  "compression": "snappy"
+  "compression": "zstd"
 }
 ```
 
 **Parameters:**
 - `output_url` (required): Signed PUT URL for Parquet output
-- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
+- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"mariadb"`, or `"redshift"`
 - `credentials_id` (required): Secret Manager secret ID containing database credentials
 - `query` (optional): SQL query to execute
 - `table_name` (optional): Table name to extract (alternative to `query`, validated for SQL injection)
-- `partition_column` (optional): Column name for parallel extraction (not supported for SQLite)
-- `partition_num` (optional): Number of parallel partitions (1-16, default: 4, not supported for SQLite)
-- `compression` (optional): `"snappy"` (default, fastest), `"zstd"` (better compression), or `"none"`
+- `compression` (optional): `"zstd"` (default, best compression), `"snappy"` (faster), or `"none"`
+- `row_group_size` (optional): Parquet row group size (default: 100000)
 
 **Notes:**
 - Must specify either `query` OR `table_name`, not both
-- SQLite does not support parallel partitioning - `partition_column` and `partition_num` will be ignored
+- DuckDB automatically optimizes query execution and memory usage
 - MariaDB uses MySQL protocol internally
 - Redshift uses PostgreSQL protocol internally
+- For MS SQL Server, ensure ADBC driver is installed (`pip install dbc && dbc add mssql`)
 
 **Success Response (200):**
 ```json
@@ -231,11 +230,11 @@ Extract database table or query results to Parquet.
     "file_size_mb": 45.2,
     "processing_time_seconds": 12.5,
     "source_type": "database",
+    "engine": "duckdb",
     "connection_info": {
       "connector_type": "postgresql",
       "query": "SELECT * FROM customers WHERE...",
-      "partitioned": true,
-      "compression": "snappy"
+      "compression": "zstd"
     }
   }
 }
@@ -252,48 +251,45 @@ Extract database table or query results to Parquet.
 
 ### Database Connector Details
 
+All connectors use **DuckDB** as the unified query engine.
+
 #### PostgreSQL
 - **Default Port:** 5432
-- **Connection String:** `postgresql://user:pass@host:5432/database`
-- **Parallel Extraction:** ✅ Supported
-- **SSL Modes:** require, prefer, disable
+- **DuckDB Extension:** `postgres` (native scanner)
+- **Connection:** `postgresql://user:pass@host:5432/database`
+- **Auto-installed:** Yes (first use)
 
 #### MySQL
 - **Default Port:** 3306
-- **Connection String:** `mysql://user:pass@host:3306/database`
-- **Parallel Extraction:** ✅ Supported
-- **SSL Modes:** require, prefer, disable
+- **DuckDB Extension:** `mysql` (native scanner)
+- **Connection:** `mysql://user:pass@host:3306/database`
+- **Auto-installed:** Yes (first use)
 
 #### SQLite
 - **Default Port:** N/A (file-based)
-- **Connection String:** `sqlite:///path/to/file.db`
-- **Parallel Extraction:** ❌ Not supported
-- **Credentials:** Only requires `file_path` or `database` field (no host/username/password)
+- **DuckDB Support:** Native (built-in)
+- **Connection:** File path via `database` or `file_path` field
+- **Credentials:** Only requires file path (no host/username/password)
 - **Note:** Use absolute paths for reliability
 
 #### MS SQL Server
 - **Default Port:** 1433
-- **Connection String:** `mssql://user:pass@host:1433/database`
-- **Parallel Extraction:** ✅ Supported
+- **DuckDB Driver:** ADBC (`adbc_driver_mssql`)
+- **Connection:** Via DuckDB ADBC secret
+- **Installation Required:** `pip install dbc && dbc add mssql`
 - **Also works for:** Azure SQL Database
-
-#### Oracle
-- **Default Port:** 1521
-- **Connection String:** `oracle://user:pass@host:1521/service_name`
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Uses `SELECT 1 FROM DUAL` for connection tests
 
 #### MariaDB
 - **Default Port:** 3306
-- **Connection String:** `mysql://user:pass@host:3306/database` (uses MySQL protocol)
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Internally uses MySQL connector
+- **Implementation:** Uses MySQL connector (MySQL protocol)
+- **Connection:** `mysql://user:pass@host:3306/database`
+- **Note:** Alias for MySQL connector
 
 #### Redshift
 - **Default Port:** 5439
-- **Connection String:** `postgresql://user:pass@host:5439/database` (uses PostgreSQL protocol)
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Internally uses PostgreSQL connector
+- **Implementation:** Uses PostgreSQL connector (PostgreSQL protocol)
+- **Connection:** `postgresql://user:pass@host:5439/database`
+- **Note:** Alias for PostgreSQL connector
 
 ---
 
@@ -479,30 +475,37 @@ All endpoints return consistent error responses:
 
 ## Performance Tips
 
-### Database Extraction
-1. **Use partitioning** for tables with >100K rows to enable parallel extraction
-2. **Specify partition_column** with an indexed column for best performance
-3. **Choose appropriate partition_num** (1-16): 4-8 partitions work well for most datasets
-4. **Use column subsets** in queries instead of `SELECT *` to reduce transfer size
-5. **Use snappy compression** for balanced performance (default)
+### Database Extraction with DuckDB
+1. **Let DuckDB optimize** - DuckDB automatically optimizes query execution and memory usage
+2. **Use column subsets** in queries instead of `SELECT *` to reduce transfer size
+3. **Choose ZSTD compression** for best compression ratio (default)
+4. **Adjust memory limit** via `DUCKDB_MEMORY_LIMIT` env var for large datasets
+5. **Use WHERE clauses** to filter data at the source for faster extraction
 
 ### Compression Options
 | Compression | Speed | Ratio | Best For |
 |------------|-------|-------|----------|
-| `snappy` (default) | Fastest | 2-4x | General use, real-time processing |
-| `zstd` | Slower | 4-8x | Archival, cold storage |
+| `zstd` (default) | Moderate | 4-8x | General use, best compression |
+| `snappy` | Fastest | 2-4x | Real-time processing, speed priority |
 | `none` | Fastest write | 1x | Immediate downstream processing |
 
-### Example: Parallel Extraction
+### Memory Configuration
+Configure DuckDB memory limits via environment variables:
+```bash
+DUCKDB_MEMORY_LIMIT=6GB    # Max memory for DuckDB (default: 6GB)
+DUCKDB_TEMP_DIR=/tmp/duckdb  # Temp directory for spilling (default: /tmp/duckdb)
+DUCKDB_THREADS=2           # Thread count (default: 2)
+```
+
+### Example: Optimized Query
 ```json
 {
-  "table_name": "large_orders_table",
-  "partition_column": "order_id",
-  "partition_num": 8,
-  "compression": "snappy"
+  "query": "SELECT customer_id, order_date, total FROM orders WHERE order_date > '2024-01-01'",
+  "compression": "zstd",
+  "row_group_size": 100000
 }
 ```
-This splits the table into 8 chunks based on `order_id` ranges and extracts them in parallel, typically 4-8x faster than single-threaded extraction.
+DuckDB automatically optimizes the query execution plan and manages memory efficiently.
 
 ---
 
@@ -531,12 +534,40 @@ This splits the table into 8 chunks based on `order_id` ranges and extracts them
 |----------|---------------|--------------|
 | Max file size | 500 MB | Yes (env var) |
 | Max processing time | 10 minutes | Yes (Cloud Run) |
-| Max memory | 2 GB | Yes (Cloud Run) |
-| Max rows processed | 10 million | Yes (env var) |
-| Max partitions | 16 | Yes (in code) |
+| DuckDB memory limit | 6 GB | Yes (`DUCKDB_MEMORY_LIMIT`) |
+| Container memory | 8 GB | Yes (Cloud Run) |
+| Max rows processed | Unlimited | Limited by memory |
+| DuckDB threads | 2 | Yes (`DUCKDB_THREADS`) |
 | Rate limit: health | None | No |
 | Rate limit: conversions | 10/min | Yes (in code) |
 | Rate limit: tests | 20/min | Yes (in code) |
+
+---
+
+## What's New in v4.0.0
+
+**Major Changes:**
+- ✨ **DuckDB Engine** - Replaced Polars + ConnectorX with DuckDB for unified query processing
+- 🚀 **Direct R2 Write** - Can now write directly to R2/S3 without local temp files (when configured)
+- 💾 **Better Memory Management** - Configurable memory limits and automatic spilling to disk
+- 🗜️ **ZSTD Default** - Changed default compression from Snappy to ZSTD for better compression
+- 📊 **Larger Row Groups** - Increased from 50K to 100K rows for better query performance
+- 🔧 **MS SQL Server** - Now uses DuckDB ADBC driver (requires `dbc add mssql`)
+
+**Removed:**
+- ❌ **Oracle Support** - Removed (no DuckDB ADBC driver available)
+- ❌ **Parallel Partitioning** - Removed manual partitioning (DuckDB handles optimization automatically)
+- ❌ **Legacy Connectors** - Removed backward compatibility layer
+
+**Breaking Changes:**
+- Oracle connector is no longer available
+- `partition_column` and `partition_num` parameters are no longer supported
+- Default compression changed from `snappy` to `zstd`
+- Default row group size changed from 50,000 to 100,000
+- MS SQL Server now requires ADBC driver installation
+
+**Migration Guide:**
+See `DUCKDB_MIGRATION.md` for detailed migration instructions and configuration options.
 
 ---
 

@@ -3,13 +3,6 @@
 from typing import Dict, Any
 from .base import BaseConnector
 
-# Legacy connectors (kept for reference/fallback)
-from .postgresql import PostgreSQLConnector as PostgreSQLConnectorLegacy
-from .mysql import MySQLConnector as MySQLConnectorLegacy
-from .sqlite import SQLiteConnector as SQLiteConnectorLegacy
-from .mssql import MSSQLConnector as MSSQLConnectorLegacy
-from .oracle import OracleConnector
-
 # DuckDB-based connectors
 from .postgres_duckdb import PostgresDuckDBConnector
 from .mysql_duckdb import MySQLDuckDBConnector
@@ -21,31 +14,15 @@ class ConnectorFactory:
 
     # Map of connector types to classes
     CONNECTOR_TYPES = {
-        # DuckDB-based connectors (new default)
+        # DuckDB-based connectors
         "postgresql": PostgresDuckDBConnector,
         "mysql": MySQLDuckDBConnector,
         "sqlite": SQLiteDuckDBConnector,
         "mssql": MSSQLDuckDBConnector,
 
-        # Legacy connectors (Oracle not supported by DuckDB ADBC)
-        "oracle": OracleConnector,
-
-        # Protocol aliases (use DuckDB connectors)
+        # Protocol aliases
         "mariadb": MySQLDuckDBConnector,  # MariaDB uses MySQL protocol
         "redshift": PostgresDuckDBConnector,  # Redshift uses PostgreSQL protocol
-
-        # Legacy connector fallbacks (for backwards compatibility if needed)
-        "postgresql_legacy": PostgreSQLConnectorLegacy,
-        "mysql_legacy": MySQLConnectorLegacy,
-        "sqlite_legacy": SQLiteConnectorLegacy,
-        "mssql_legacy": MSSQLConnectorLegacy,
-
-        # Not yet implemented (planned for future):
-        # "bigquery": BigQueryConnector,
-        # "snowflake": SnowflakeConnector,
-        # "clickhouse": ClickHouseConnector,
-        # "google_sheets": GoogleSheetsConnector,
-        # "stripe": StripeConnector,
     }
 
     @classmethod
