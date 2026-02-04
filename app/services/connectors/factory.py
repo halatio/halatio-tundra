@@ -2,27 +2,43 @@
 
 from typing import Dict, Any
 from .base import BaseConnector
-from .postgresql import PostgreSQLConnector
-from .mysql import MySQLConnector
-from .sqlite import SQLiteConnector
-from .mssql import MSSQLConnector
+
+# Legacy connectors (kept for reference/fallback)
+from .postgresql import PostgreSQLConnector as PostgreSQLConnectorLegacy
+from .mysql import MySQLConnector as MySQLConnectorLegacy
+from .sqlite import SQLiteConnector as SQLiteConnectorLegacy
+from .mssql import MSSQLConnector as MSSQLConnectorLegacy
 from .oracle import OracleConnector
+
+# DuckDB-based connectors
+from .postgres_duckdb import PostgresDuckDBConnector
+from .mysql_duckdb import MySQLDuckDBConnector
+from .sqlite_duckdb import SQLiteDuckDBConnector
+from .mssql_duckdb import MSSQLDuckDBConnector
 
 class ConnectorFactory:
     """Factory for creating connector instances"""
 
     # Map of connector types to classes
     CONNECTOR_TYPES = {
-        # Native connectors
-        "postgresql": PostgreSQLConnector,
-        "mysql": MySQLConnector,
-        "sqlite": SQLiteConnector,
-        "mssql": MSSQLConnector,
+        # DuckDB-based connectors (new default)
+        "postgresql": PostgresDuckDBConnector,
+        "mysql": MySQLDuckDBConnector,
+        "sqlite": SQLiteDuckDBConnector,
+        "mssql": MSSQLDuckDBConnector,
+
+        # Legacy connectors (Oracle not supported by DuckDB ADBC)
         "oracle": OracleConnector,
 
-        # Protocol aliases (use existing connectors)
-        "mariadb": MySQLConnector,  # MariaDB uses MySQL protocol
-        "redshift": PostgreSQLConnector,  # Redshift uses PostgreSQL protocol
+        # Protocol aliases (use DuckDB connectors)
+        "mariadb": MySQLDuckDBConnector,  # MariaDB uses MySQL protocol
+        "redshift": PostgresDuckDBConnector,  # Redshift uses PostgreSQL protocol
+
+        # Legacy connector fallbacks (for backwards compatibility if needed)
+        "postgresql_legacy": PostgreSQLConnectorLegacy,
+        "mysql_legacy": MySQLConnectorLegacy,
+        "sqlite_legacy": SQLiteConnectorLegacy,
+        "mssql_legacy": MSSQLConnectorLegacy,
 
         # Not yet implemented (planned for future):
         # "bigquery": BigQueryConnector,
