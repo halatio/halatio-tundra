@@ -45,7 +45,8 @@ POST /convert/file  ──► lookup source_id       ──► Supabase (sources
 | `R2_ACCOUNT_ID` | ✓ | Cloudflare account ID (32-char hex) |
 | `R2_BUCKET_PREFIX` | | Prefix for per-org R2 buckets (default: `halatio-org`) |
 | `SUPABASE_URL` | ✓ | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | ✓ | Supabase service role key |
+| `SUPABASE_SECRET_KEY` | ✓* | Supabase secret key (`sb_secret_...`, preferred) |
+| `SUPABASE_SERVICE_ROLE_KEY` | ✓* | Legacy Supabase service role key (fallback) |
 | `DUCKDB_MEMORY_LIMIT` | | DuckDB memory cap (default: `6GB`) |
 | `DUCKDB_THREADS` | | DuckDB thread count (default: `2`) |
 | `DUCKDB_TEMP_DIR` | | Spill directory (default: `/tmp/duckdb_swap`) |
@@ -61,6 +62,8 @@ Output:        r2://halatio-org-{org_id}/processed/{source_id}.parquet
 ```
 
 The file format (csv, json, …) and `org_id` are read from the Supabase `sources` table via `source_id`.
+
+\* Provide at least one of `SUPABASE_SECRET_KEY` (preferred) or `SUPABASE_SERVICE_ROLE_KEY` (legacy fallback).
 
 ---
 
