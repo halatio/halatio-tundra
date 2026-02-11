@@ -29,7 +29,7 @@ class Settings(BaseSettings):
 
     # Supabase
     SUPABASE_URL: str = Field(..., description="Supabase project URL")
-    SUPABASE_SERVICE_ROLE_KEY: str = Field(..., description="Supabase service role key")
+    SUPABASE_PUBLISHABLE_KEY: str = Field(..., description="Supabase publishable key")
 
     # DuckDB
     DUCKDB_MEMORY_LIMIT: str = Field("6GB", description="DuckDB memory limit")
