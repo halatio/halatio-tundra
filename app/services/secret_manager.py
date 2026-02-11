@@ -6,8 +6,15 @@ import logging
 from typing import Dict, Any, Optional
 from threading import Lock
 import time
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+
+def _encode_userinfo_component(value: Any) -> str:
+    """Percent-encode username/password values used in URI userinfo."""
+    return quote(str(value), safe="")
+
 
 class SecretManagerService:
     """Manages credentials in Google Secret Manager with caching"""
@@ -146,13 +153,13 @@ class SecretManagerService:
         """
         if db_type == "postgresql":
             return (
-                f"postgresql://{credentials['username']}:{credentials['password']}"
+                f"postgresql://{_encode_userinfo_component(credentials['username'])}:{_encode_userinfo_component(credentials['password'])}"
                 f"@{credentials['host']}:{credentials.get('port', 5432)}"
                 f"/{credentials['database']}"
             )
         elif db_type == "mysql":
             return (
-                f"mysql://{credentials['username']}:{credentials['password']}"
+                f"mysql://{_encode_userinfo_component(credentials['username'])}:{_encode_userinfo_component(credentials['password'])}"
                 f"@{credentials['host']}:{credentials.get('port', 3306)}"
                 f"/{credentials['database']}"
             )
@@ -161,7 +168,7 @@ class SecretManagerService:
             return f"bigquery://{credentials['project_id']}"
         elif db_type == "snowflake":
             return (
-                f"snowflake://{credentials['username']}:{credentials['password']}"
+                f"snowflake://{_encode_userinfo_component(credentials['username'])}:{_encode_userinfo_component(credentials['password'])}"
                 f"@{credentials['account']}/{credentials['database']}"
                 f"?warehouse={credentials.get('warehouse', '')}"
             )

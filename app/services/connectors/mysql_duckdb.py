@@ -3,6 +3,7 @@
 import duckdb
 import logging
 from typing import Any, Dict
+from urllib.parse import quote
 from .duckdb_base import DuckDBBaseConnector, _make_duckdb_config
 import anyio
 
@@ -14,8 +15,10 @@ class MySQLDuckDBConnector(DuckDBBaseConnector):
 
     def __init__(self, credentials: Dict[str, Any]) -> None:
         super().__init__(credentials)
+        encoded_username = quote(credentials["username"], safe="")
+        encoded_password = quote(credentials["password"], safe="")
         self._conn_str = (
-            f"mysql://{credentials['username']}:{credentials['password']}"
+            f"mysql://{encoded_username}:{encoded_password}"
             f"@{credentials['host']}:{credentials.get('port', 3306)}"
             f"/{credentials['database']}"
         )
