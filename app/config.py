@@ -1,48 +1,41 @@
 from pydantic_settings import BaseSettings
-from pydantic import Field, HttpUrl
+from pydantic import Field
 from typing import List
+
 
 class Settings(BaseSettings):
     """Settings for Halatio Tundra conversion service"""
 
-    # Runtime environment: 'dev', 'staging', or 'production'
     ENV: str = Field(..., description="Environment: dev, staging, production")
 
-    # Server configuration
     HOST: str = "0.0.0.0"
     PORT: int = 8080
 
-    # Processing limits
     MAX_FILE_SIZE_MB: int = 500
-    MAX_API_RESPONSE_MB: int = 100
-    MAX_SQL_RESPONSE_MB: int = 100
     MAX_PROCESSING_TIME_MINUTES: int = 10
 
-    # Performance
-    MAX_MEMORY_USAGE_GB: int = 2
-    MAX_CONCURRENT_CONVERSIONS: int = 5
-
-    # File formats
     SUPPORTED_FILE_FORMATS: List[str] = ["csv", "tsv", "json", "geojson", "excel", "parquet"]
 
-    # Parquet
-    PARQUET_COMPRESSION: str = "snappy"
-    PARQUET_ROW_GROUP_SIZE: int = 50000
-
-    # SQL limits
-    DEFAULT_SQL_LIMIT: int = 100_000
-    MAX_SQL_LIMIT: int = 1_000_000
-
-    # Logging
     LOG_LEVEL: str = "INFO"
 
-    # Google Cloud Project (for Secret Manager)
+    # Google Cloud (Secret Manager for database credentials)
     GCP_PROJECT_ID: str = Field(..., description="Google Cloud Project ID")
 
-    # Database connection pooling
-    DB_POOL_SIZE: int = 5
-    DB_MAX_OVERFLOW: int = 10
-    DB_POOL_RECYCLE_SECONDS: int = 3600
+    # Cloudflare R2
+    R2_ACCESS_KEY_ID: str = Field(..., description="R2 access key ID")
+    R2_SECRET_ACCESS_KEY: str = Field(..., description="R2 secret access key")
+    R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID (32-char hex)")
+    R2_BUCKET_PREFIX: str = Field("halatio-org", description="Prefix for per-org R2 buckets")
+
+    # Supabase
+    SUPABASE_URL: str = Field(..., description="Supabase project URL")
+    SUPABASE_SERVICE_ROLE_KEY: str = Field(..., description="Supabase service role key")
+
+    # DuckDB
+    DUCKDB_MEMORY_LIMIT: str = Field("6GB", description="DuckDB memory limit")
+    DUCKDB_THREADS: int = Field(2, description="DuckDB thread count")
+    DUCKDB_TEMP_DIR: str = Field("/tmp/duckdb_swap", description="DuckDB spill directory")
+    DUCKDB_MAX_TEMP_DIR_SIZE: str = Field("1GB", description="Max DuckDB temp directory size")
 
     class Config:
         env_file = ".env"
@@ -50,7 +43,6 @@ class Settings(BaseSettings):
 
     @property
     def ALLOWED_ORIGINS(self) -> List[str]:
-        """Dynamically determine CORS origins based on environment"""
         base = [
             "https://halatio.com",
             "https://www.halatio.com",
@@ -59,5 +51,6 @@ class Settings(BaseSettings):
         if self.ENV != "production":
             base.append("http://localhost:3000")
         return base
-    
-settings = Settings() # type: ignore
+
+
+settings = Settings()  # type: ignore
