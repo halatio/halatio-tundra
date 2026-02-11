@@ -7,7 +7,6 @@ from .base import BaseConnector
 from .postgres_duckdb import PostgresDuckDBConnector
 from .mysql_duckdb import MySQLDuckDBConnector
 from .sqlite_duckdb import SQLiteDuckDBConnector
-from .mssql_duckdb import MSSQLDuckDBConnector
 
 __all__ = [
     "ConnectorFactory",
@@ -15,5 +14,4 @@ __all__ = [
     "PostgresDuckDBConnector",
     "MySQLDuckDBConnector",
     "SQLiteDuckDBConnector",
-    "MSSQLDuckDBConnector",
 ]

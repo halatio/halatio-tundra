@@ -7,7 +7,6 @@ from .base import BaseConnector
 from .postgres_duckdb import PostgresDuckDBConnector
 from .mysql_duckdb import MySQLDuckDBConnector
 from .sqlite_duckdb import SQLiteDuckDBConnector
-from .mssql_duckdb import MSSQLDuckDBConnector
 
 class ConnectorFactory:
     """Factory for creating connector instances"""
@@ -18,7 +17,6 @@ class ConnectorFactory:
         "postgresql": PostgresDuckDBConnector,
         "mysql": MySQLDuckDBConnector,
         "sqlite": SQLiteDuckDBConnector,
-        "mssql": MSSQLDuckDBConnector,
 
         # Protocol aliases
         "mariadb": MySQLDuckDBConnector,  # MariaDB uses MySQL protocol
@@ -35,7 +33,7 @@ class ConnectorFactory:
         Create connector instance
 
         Args:
-            connector_type: Type of connector (postgresql, mysql, sqlite, mssql, oracle, mariadb, redshift)
+            connector_type: Type of connector (postgresql, mysql, sqlite, mariadb, redshift)
             credentials: Credential dictionary
 
         Returns:

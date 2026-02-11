@@ -76,7 +76,7 @@ class DuckDBBaseConnector(ABC):
 
     @abstractmethod
     def _get_db_alias(self) -> str:
-        """Return the database alias (e.g. 'pg', 'mysql', 'sqlite', 'mssql')."""
+        """Return the database alias (e.g. 'pg', 'mysql', 'sqlite')."""
 
     @abstractmethod
     async def test_connection(self) -> Dict[str, Any]:

@@ -13,7 +13,6 @@ The following connectors now use DuckDB:
 - **PostgreSQL** - Native postgres scanner (`postgres` extension)
 - **MySQL** - Native mysql scanner (`mysql` extension)
 - **SQLite** - Native support (built-in)
-- **MS SQL Server** - ADBC driver (`adbc_driver_mssql`)
 
 ### Legacy Connectors
 
@@ -21,7 +20,6 @@ Legacy Polars-based connectors are still available with `_legacy` suffix:
 - `postgresql_legacy`
 - `mysql_legacy`
 - `sqlite_legacy`
-- `mssql_legacy`
 
 Oracle remains on the legacy connector (no DuckDB ADBC driver available).
 
@@ -68,16 +66,6 @@ pip install -r requirements.txt
 This installs:
 - `duckdb>=1.1.0`
 - All legacy dependencies (for fallback)
-
-### MS SQL Server (ADBC)
-For MS SQL Server support, install the ADBC driver:
-
-```bash
-pip install dbc
-dbc add mssql
-```
-
-This installs the `adbc_driver_mssql` driver that DuckDB uses.
 
 ## Configuration
 
@@ -186,23 +174,12 @@ connector = ConnectorFactory.create_connector(
 ## Migration Checklist
 
 - [x] Install `duckdb>=1.1.0` via requirements.txt
-- [ ] For MS SQL Server: Install ADBC driver (`pip install dbc && dbc add mssql`)
 - [ ] Update environment variables if needed (memory limit, temp dir)
 - [ ] Update Cloud Run config with DuckDB settings
 - [ ] Test connectors in staging environment
 - [ ] Monitor memory usage and adjust `DUCKDB_MEMORY_LIMIT` if needed
 
 ## Troubleshooting
-
-### MS SQL Server Connection Fails
-
-**Error:** `Failed to create ADBC secret`
-
-**Solution:** Install the ADBC driver:
-```bash
-pip install dbc
-dbc add mssql
-```
 
 ### Out of Memory Errors
 
