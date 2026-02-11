@@ -16,6 +16,9 @@ python-multipart
 # HTTP client
 httpx
 
+# Supabase
+supabase>=2.0.0
+
 # Environment and security
 python-dotenv
 python-jose[cryptography]

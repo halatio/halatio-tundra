@@ -1,91 +1,68 @@
 """Supabase client for querying source metadata and updating status"""
 
-import httpx
 import logging
 from typing import Any, Dict, Optional
+from supabase import create_client, Client
 from ..config import settings
 
 logger = logging.getLogger(__name__)
 
-
-class SupabaseClient:
-    """Minimal httpx-based PostgREST client for the Supabase sources table"""
-
-    def __init__(self) -> None:
-        self.base_url = settings.SUPABASE_URL.rstrip("/")
-        self._headers = {
-            "apikey": settings.SUPABASE_SERVICE_ROLE_KEY,
-            "Authorization": f"Bearer {settings.SUPABASE_SERVICE_ROLE_KEY}",
-            "Content-Type": "application/json",
-        }
-
-    async def get_source(self, source_id: str) -> Dict[str, Any]:
-        """
-        Fetch a source record from Supabase.
-
-        Returns a dict with: id, organization_id, connector_type, source_type
-
-        Raises:
-            ValueError: if the source is not found
-            httpx.HTTPStatusError: on HTTP errors
-        """
-        url = f"{self.base_url}/rest/v1/sources"
-        params = {
-            "id": f"eq.{source_id}",
-            "select": "id,organization_id,connector_type,source_type",
-        }
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.get(url, headers=self._headers, params=params)
-            response.raise_for_status()
-            rows = response.json()
-
-        if not rows:
-            raise ValueError(f"Source not found: {source_id}")
-
-        return rows[0]
-
-    async def update_source(
-        self,
-        source_id: str,
-        status: str,
-        row_count: Optional[int] = None,
-        file_size_bytes: Optional[int] = None,
-    ) -> None:
-        """
-        Update a source record's status and optional metrics.
-
-        Args:
-            source_id: UUID of the source record
-            status: New status value ("active", "error", etc.)
-            row_count: Number of rows in the processed file
-            file_size_bytes: Size of the output parquet file in bytes
-        """
-        url = f"{self.base_url}/rest/v1/sources"
-        params = {"id": f"eq.{source_id}"}
-        payload: Dict[str, Any] = {"status": status}
-        if row_count is not None:
-            payload["row_count"] = row_count
-        if file_size_bytes is not None:
-            payload["file_size_bytes"] = file_size_bytes
-
-        async with httpx.AsyncClient(timeout=10) as client:
-            response = await client.patch(
-                url,
-                headers={**self._headers, "Prefer": "return=minimal"},
-                params=params,
-                json=payload,
-            )
-            response.raise_for_status()
-
-        logger.info(f"Updated source {source_id}: status={status}")
+_client: Optional[Client] = None
 
 
-_client: Optional[SupabaseClient] = None
-
-
-def get_supabase_client() -> SupabaseClient:
-    """Return a module-level singleton SupabaseClient."""
+def get_supabase_client() -> Client:
+    """Return a module-level singleton Supabase client."""
     global _client
     if _client is None:
-        _client = SupabaseClient()
+        _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_SERVICE_ROLE_KEY)
     return _client
+
+
+async def get_source(source_id: str) -> Dict[str, Any]:
+    """
+    Fetch a source record from the sources table.
+
+    Returns a dict with: id, organization_id, connector_type, source_type
+
+    Raises:
+        ValueError: if the source is not found
+    """
+    client = get_supabase_client()
+    response = (
+        client.table("sources")
+        .select("id, organization_id, connector_type, source_type")
+        .eq("id", source_id)
+        .single()
+        .execute()
+    )
+
+    if not response.data:
+        raise ValueError(f"Source not found: {source_id}")
+
+    return response.data
+
+
+async def update_source(
+    source_id: str,
+    status: str,
+    row_count: Optional[int] = None,
+    file_size_bytes: Optional[int] = None,
+) -> None:
+    """
+    Update a source record's status and optional metrics.
+
+    Args:
+        source_id: UUID of the source record
+        status: New status value ("active", "error", etc.)
+        row_count: Number of rows in the processed file
+        file_size_bytes: Size of the output parquet file in bytes
+    """
+    client = get_supabase_client()
+    payload: Dict[str, Any] = {"status": status}
+    if row_count is not None:
+        payload["row_count"] = row_count
+    if file_size_bytes is not None:
+        payload["file_size_bytes"] = file_size_bytes
+
+    client.table("sources").update(payload).eq("id", source_id).execute()
+    logger.info(f"Updated source {source_id}: status={status}")

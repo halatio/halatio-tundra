@@ -24,7 +24,7 @@ from .models.conversionRequest import (
 from .services.file_converter import FileConverter
 from .services.schema_inference import SchemaInferenceService
 from .services.secret_manager import get_secret_manager
-from .services.supabase_client import get_supabase_client
+from .services.supabase_client import get_source, update_source
 from .services.connectors.factory import ConnectorFactory
 from .services.connectors.duckdb_base import _make_duckdb_config
 from .utils import raise_http_exception, ValidationError, DatabaseError
@@ -137,15 +137,10 @@ async def deep_health_check():
         health_status["status"] = "degraded"
 
     try:
-        supabase = get_supabase_client()
-        # Lightweight probe — just check that the endpoint is reachable
-        import httpx
-        async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.get(
-                f"{settings.SUPABASE_URL}/rest/v1/",
-                headers={"apikey": settings.SUPABASE_SERVICE_ROLE_KEY},
-            )
-            r.raise_for_status()
+        from .services.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        # Lightweight probe: list 1 row from sources table
+        sb.table("sources").select("id").limit(1).execute()
         health_status["checks"]["supabase"] = "healthy"
     except Exception as e:
         health_status["checks"]["supabase"] = f"unhealthy: {e}"
@@ -199,8 +194,7 @@ async def convert_file(request: Request, body: FileConversionRequest):
     logger.info(f"File conversion requested: source_id={body.source_id}")
 
     try:
-        supabase = get_supabase_client()
-        source = await supabase.get_source(body.source_id)
+        source = await get_source(body.source_id)
 
         org_id = source["organization_id"]
         file_format = (body.format.value if body.format else source["connector_type"])
@@ -219,11 +213,11 @@ async def convert_file(request: Request, body: FileConversionRequest):
         )
 
         if not result["success"]:
-            await supabase.update_source(body.source_id, status="error")
+            await update_source(body.source_id, status="error")
             raise HTTPException(status_code=500, detail=result["error"])
 
         meta = result["metadata"]
-        await supabase.update_source(
+        await update_source(
             body.source_id,
             status="active",
             row_count=meta["rows"],
@@ -249,8 +243,7 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
     logger.info(f"Schema inference requested: source_id={body.source_id}")
 
     try:
-        supabase = get_supabase_client()
-        source = await supabase.get_source(body.source_id)
+        source = await get_source(body.source_id)
 
         org_id = source["organization_id"]
         file_format = (body.format.value if body.format else source["connector_type"])
@@ -308,8 +301,7 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
     logger.info(f"Database conversion requested: source_id={body.source_id}")
 
     try:
-        supabase = get_supabase_client()
-        source = await supabase.get_source(body.source_id)
+        source = await get_source(body.source_id)
 
         org_id = source["organization_id"]
         connector_type = source["connector_type"]
@@ -331,7 +323,7 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
             compression=body.compression.value,
         )
 
-        await supabase.update_source(
+        await update_source(
             body.source_id,
             status="active",
             row_count=metadata["rows"],
