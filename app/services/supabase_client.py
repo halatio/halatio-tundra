@@ -2,7 +2,7 @@
 
 import logging
 from typing import Any, Dict, Optional
-from supabase import create_client, Client
+from supabase import create_client, Client, ClientOptions
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -14,7 +14,11 @@ def get_supabase_client() -> Client:
     """Return a module-level singleton Supabase client."""
     global _client
     if _client is None:
-        _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_PUBLISHABLE_KEY)
+        _client = create_client(
+            settings.SUPABASE_URL,
+            settings.SUPABASE_ADMIN_KEY,
+            options=ClientOptions(auto_refresh_token=False, persist_session=False),
+        )
     return _client
 
 

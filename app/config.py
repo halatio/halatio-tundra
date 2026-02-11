@@ -1,6 +1,6 @@
 from pydantic_settings import BaseSettings
-from pydantic import Field
-from typing import List
+from pydantic import Field, model_validator
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -29,7 +29,14 @@ class Settings(BaseSettings):
 
     # Supabase
     SUPABASE_URL: str = Field(..., description="Supabase project URL")
-    SUPABASE_PUBLISHABLE_KEY: str = Field(..., description="Supabase publishable key")
+    SUPABASE_SECRET_KEY: Optional[str] = Field(
+        default=None,
+        description="Supabase secret key (sb_secret_..., preferred)",
+    )
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = Field(
+        default=None,
+        description="Legacy Supabase service-role key (fallback if secret key is unavailable)",
+    )
 
     # DuckDB
     DUCKDB_MEMORY_LIMIT: str = Field("6GB", description="DuckDB memory limit")
@@ -40,6 +47,18 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+
+    @model_validator(mode="after")
+    def _validate_supabase_admin_key(self):
+        if not self.SUPABASE_SECRET_KEY and not self.SUPABASE_SERVICE_ROLE_KEY:
+            raise ValueError(
+                "Either SUPABASE_SECRET_KEY (preferred) or SUPABASE_SERVICE_ROLE_KEY must be set"
+            )
+        return self
+
+    @property
+    def SUPABASE_ADMIN_KEY(self) -> str:
+        return self.SUPABASE_SECRET_KEY or self.SUPABASE_SERVICE_ROLE_KEY or ""
 
     @property
     def ALLOWED_ORIGINS(self) -> List[str]:
