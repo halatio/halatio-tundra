@@ -350,9 +350,11 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
         return ConversionResponse(success=True, metadata=conversion_metadata)
 
     except (ValidationError, ValueError) as e:
+        await update_source(body.source_id, status="error")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Database conversion failed: {e}")
+        await update_source(body.source_id, status="error")
         raise_http_exception(e)
 
 
