@@ -68,7 +68,7 @@ def _setup_r2_persistent_secret() -> None:
                 TYPE r2,
                 KEY_ID '{settings.R2_ACCESS_KEY_ID}',
                 SECRET '{settings.R2_SECRET_ACCESS_KEY}',
-                ACCOUNT_ID '{settings.R2_ACCOUNT_ID}'
+                ACCOUNT_ID '{settings.CLOUDFLARE_ACCOUNT_ID}'
             )
         """)
         logger.info("DuckDB R2 persistent secret created")

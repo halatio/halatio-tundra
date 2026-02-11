@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     # Cloudflare R2
     R2_ACCESS_KEY_ID: str = Field(..., description="R2 access key ID")
     R2_SECRET_ACCESS_KEY: str = Field(..., description="R2 secret access key")
-    R2_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID (32-char hex)")
+    CLOUDFLARE_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID (32-char hex)")
     R2_BUCKET_PREFIX: str = Field("halatio-org", description="Prefix for per-org R2 buckets")
 
     # Supabase
