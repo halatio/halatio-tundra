@@ -188,18 +188,13 @@ class ErrorResponse(BaseModel):
 
 # New models for database connectors (Phase 1)
 class ConnectorType(str, Enum):
-    """Supported connector types"""
+    """Supported connector types (all via DuckDB)"""
     postgresql = "postgresql"
     mysql = "mysql"
     sqlite = "sqlite"
     mssql = "mssql"
-    oracle = "oracle"
     mariadb = "mariadb"
     redshift = "redshift"
-    bigquery = "bigquery"
-    snowflake = "snowflake"
-    google_sheets = "google_sheets"
-    stripe = "stripe"
 
 class DatabaseCredentials(BaseModel):
     """Database connection credentials"""
@@ -236,7 +231,5 @@ class DatabaseConversionRequest(BaseModel):
     credentials_id: str = Field(..., description="Secret Manager credential ID")
     query: Optional[str] = Field(None, description="SQL query to execute")
     table_name: Optional[str] = Field(None, description="Table name to extract (alternative to query)")
-    partition_column: Optional[str] = Field(None, description="Column for parallel extraction")
-    partition_num: int = Field(4, description="Number of parallel partitions", ge=1, le=16)
-    compression: ParquetCompression = Field(ParquetCompression.snappy, description="Parquet compression algorithm")
+    compression: ParquetCompression = Field(ParquetCompression.zstd, description="Parquet compression algorithm")
     webhook_url: Optional[HttpUrl] = Field(None, description="Webhook for progress updates")

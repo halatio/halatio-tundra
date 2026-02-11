@@ -1,22 +1,24 @@
-import polars as pl
+import duckdb
+import pyarrow as pa
 import httpx
 import json
 import time
 import logging
-from io import BytesIO
+import tempfile
+import os
 from typing import Dict, Any, Optional
 from ..models.conversionRequest import ConversionMetadata
 
 logger = logging.getLogger(__name__)
 
+
 class SqlConverter:
-    """Production SQL data converter - SQL API to Parquet"""
-    
-    # Processing limits
-    MAX_RESPONSE_SIZE = 100 * 1024 * 1024  # 100MB max SQL response
-    TIMEOUT_SECONDS = 600  # 10 minutes max for SQL execution
-    DEFAULT_QUERY_LIMIT = 100000  # Default row limit for safety
-    
+    """SQL API proxy converter - executes remote SQL and converts results to Parquet"""
+
+    MAX_RESPONSE_SIZE = 100 * 1024 * 1024  # 100MB
+    TIMEOUT_SECONDS = 600
+    DEFAULT_QUERY_LIMIT = 100000
+
     @staticmethod
     async def convert(
         endpoint: str,
@@ -26,71 +28,107 @@ class SqlConverter:
         credentials_id: Optional[str] = None,
         options: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
-        """Execute SQL query and convert results to parquet"""
+        """Execute SQL query via remote endpoint and convert results to parquet"""
 
         start_time = time.time()
-        query_start_time = None
         query_execution_time_ms = None
         options = options or {}
 
         try:
-            logger.info(f"💾 Starting SQL conversion: {database}")
+            logger.info(f"Starting SQL conversion: {database}")
 
-            # Extract options
-            max_rows = options.get('max_rows', SqlConverter.DEFAULT_QUERY_LIMIT)
-            query_timeout = options.get('query_timeout_seconds', SqlConverter.TIMEOUT_SECONDS)
+            max_rows = options.get("max_rows", SqlConverter.DEFAULT_QUERY_LIMIT)
+            query_timeout = options.get("query_timeout_seconds", SqlConverter.TIMEOUT_SECONDS)
 
-            # 1. Add safety limit to query if not present
             safe_query = SqlConverter._add_safety_limit(query, max_rows)
 
-            # 2. Execute SQL query
             query_start_time = time.time()
             sql_results = await SqlConverter._execute_sql_query(
                 endpoint, database, safe_query, credentials_id, options, query_timeout
             )
             query_execution_time_ms = (time.time() - query_start_time) * 1000
 
-            # 3. Convert results to DataFrame
-            df = SqlConverter._create_dataframe(sql_results)
+            # Convert results to parquet via DuckDB
+            with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp:
+                tmp_path = tmp.name
 
-            # 4. Convert to parquet
-            parquet_buffer = SqlConverter._convert_to_parquet(df)
+            try:
+                row_count, col_count, schema = SqlConverter._write_parquet(sql_results, tmp_path)
 
-            # 5. Upload to R2
-            await SqlConverter._upload_parquet(output_url, parquet_buffer)
+                with open(tmp_path, "rb") as f:
+                    parquet_data = f.read()
+            finally:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
 
-            # 6. Generate metadata
+            await SqlConverter._upload_parquet(output_url, parquet_data)
+
             processing_time = time.time() - start_time
-            file_size_mb = len(parquet_buffer) / 1024 / 1024
+            file_size_mb = len(parquet_data) / 1024 / 1024
 
             metadata = ConversionMetadata(
-                rows=len(df),
-                columns=len(df.columns),
-                column_schema=SqlConverter._generate_schema(df),
+                rows=row_count,
+                columns=col_count,
+                column_schema=schema,
                 file_size_mb=round(file_size_mb, 2),
                 processing_time_seconds=round(processing_time, 2),
                 source_type="sql",
                 query_execution_time_ms=round(query_execution_time_ms, 2) if query_execution_time_ms else None,
                 connection_info={
-                    "database_type": options.get('database_type', 'Unknown'),
-                    "rows_fetched": len(df)
+                    "database_type": options.get("database_type", "Unknown"),
+                    "rows_fetched": row_count,
+                    "engine": "duckdb"
                 }
             )
 
-            logger.info(f"✅ SQL conversion successful: {len(df)} rows, {file_size_mb:.2f}MB")
-
-            return {
-                "success": True,
-                "metadata": metadata.dict()
-            }
+            logger.info(f"SQL conversion complete: {row_count} rows, {file_size_mb:.2f}MB")
+            return {"success": True, "metadata": metadata.dict()}
 
         except Exception as e:
-            logger.error(f"❌ SQL conversion failed: {str(e)}")
-            return {
-                "success": False,
-                "error": str(e)
+            logger.error(f"SQL conversion failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    @staticmethod
+    def _write_parquet(data: list, output_path: str):
+        """Write SQL results to parquet using DuckDB"""
+
+        if not data:
+            # Write empty parquet
+            table = pa.table({"_empty": pa.array([], type=pa.null())})
+        else:
+            table = pa.Table.from_pylist(data)
+
+        conn = duckdb.connect()
+        try:
+            memory_limit = os.getenv("DUCKDB_MEMORY_LIMIT", "6GB")
+            conn.execute(f"SET memory_limit = '{memory_limit}'")
+
+            conn.register("sql_results", table)
+            conn.execute(f"""
+                COPY sql_results
+                TO '{output_path}'
+                (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 100000)
+            """)
+
+            row_count = conn.execute("SELECT COUNT(*) FROM sql_results").fetchone()[0]
+            desc = conn.execute("DESCRIBE sql_results").fetchall()
+            col_count = len(desc)
+
+            schema = {
+                "fields": [
+                    {"name": row[0], "type": row[1]}
+                    for row in desc
+                    if not row[0].startswith("_")
+                ],
+                "format": "parquet",
+                "encoding": "utf-8",
+                "source": "sql"
             }
-    
+
+            return row_count, col_count, schema
+        finally:
+            conn.close()
+
     @staticmethod
     async def _execute_sql_query(
         endpoint: str,
@@ -102,175 +140,74 @@ class SqlConverter:
     ) -> list:
         """Execute SQL query via API endpoint"""
 
-        # Build request headers
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+        headers = {"Content-Type": "application/json", "Accept": "application/json"}
 
-        # Add authentication if credentials provided
         if credentials_id:
             auth_headers = await SqlConverter._get_auth_headers(credentials_id)
             headers.update(auth_headers)
 
-        # Prepare request body
-        request_body = {
-            "query": query,
-            "database": database
-        }
+        request_body = {"query": query, "database": database}
+        if options.get("port"):
+            request_body["port"] = options["port"]
+        if options.get("ssl_mode"):
+            request_body["ssl_mode"] = options["ssl_mode"]
 
-        # Add optional parameters from options
-        if options.get('port'):
-            request_body["port"] = options['port']
-        if options.get('ssl_mode'):
-            request_body["ssl_mode"] = options['ssl_mode']
-
-        # Execute SQL query
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(endpoint, headers=headers, json=request_body)
             response.raise_for_status()
-            
-            # Check response size
-            content_length = response.headers.get('content-length')
+
+            content_length = response.headers.get("content-length")
             if content_length and int(content_length) > SqlConverter.MAX_RESPONSE_SIZE:
-                raise ValueError(f"SQL response too large: {int(content_length)/1024/1024:.1f}MB exceeds 100MB limit")
-            
+                raise ValueError(
+                    f"SQL response too large: {int(content_length)/1024/1024:.1f}MB exceeds 100MB limit"
+                )
+
             data = response.json()
-            
-            # Additional size check
-            data_size = len(json.dumps(data).encode('utf-8'))
+
+            data_size = len(json.dumps(data).encode("utf-8"))
             if data_size > SqlConverter.MAX_RESPONSE_SIZE:
-                raise ValueError(f"SQL response too large after parsing: {data_size/1024/1024:.1f}MB exceeds 100MB limit")
-        
-        # Extract rows from response
+                raise ValueError(
+                    f"SQL response too large: {data_size/1024/1024:.1f}MB exceeds 100MB limit"
+                )
+
         rows = SqlConverter._extract_rows_from_response(data)
-        
-        logger.info(f"📥 SQL query returned {len(rows)} rows ({data_size/1024/1024:.2f}MB)")
+        logger.info(f"SQL query returned {len(rows)} rows")
         return rows
-    
+
     @staticmethod
     async def _get_auth_headers(credentials_id: str) -> Dict[str, str]:
-        """Get authentication headers from stored credentials"""
-        
-        # TODO: Implement credential retrieval from your vault/storage
-        # This is a placeholder - you'll need to implement based on your credential storage
-        
-        logger.warning(f"🔐 SQL credential retrieval not implemented for: {credentials_id}")
+        logger.warning(f"SQL credential retrieval not implemented for: {credentials_id}")
         return {}
-        
-        # Example implementation:
-        # credentials = await vault_client.get_credential(credentials_id)
-        # 
-        # if credentials['type'] == 'bearer':
-        #     return {"Authorization": f"Bearer {credentials['value']}"}
-        # elif credentials['type'] == 'api-key':
-        #     return {"X-API-Key": credentials['value']}
-        # elif credentials['type'] == 'basic':
-        #     import base64
-        #     user_data = json.loads(credentials['value'])
-        #     encoded = base64.b64encode(f"{user_data['username']}:{user_data['password']}".encode()).decode()
-        #     return {"Authorization": f"Basic {encoded}"}
-        # 
-        # return {}
-    
+
     @staticmethod
     def _add_safety_limit(query: str, max_rows: Optional[int] = None) -> str:
-        """
-        Add LIMIT clause to query using subquery wrapping for safety
-
-        This method wraps the user query in a subquery and applies LIMIT,
-        which is safer than string manipulation and works with:
-        - CTEs (WITH clauses)
-        - Comments
-        - Complex queries with UNION, GROUP BY, etc.
-        """
-
         if max_rows is None:
             max_rows = SqlConverter.DEFAULT_QUERY_LIMIT
 
-        original_query = query.strip()
+        original_query = query.strip().rstrip(";")
 
-        # Remove trailing semicolon if present
-        if original_query.endswith(';'):
-            original_query = original_query[:-1]
-
-        # Check if LIMIT already exists in the query (case-insensitive)
-        trimmed_query_lower = original_query.lower()
-        if 'limit' in trimmed_query_lower:
-            # Query already has LIMIT, return as-is
+        if "limit" in original_query.lower():
             return original_query
 
-        # Wrap in subquery to apply LIMIT safely
-        # This works with CTEs, comments, and complex queries
-        wrapped_query = f"SELECT * FROM ({original_query}) AS subq LIMIT {max_rows}"
+        return f"SELECT * FROM ({original_query}) AS subq LIMIT {max_rows}"
 
-        logger.info(f"Applied safety LIMIT {max_rows} via subquery wrapping")
-
-        return wrapped_query
-    
     @staticmethod
     def _extract_rows_from_response(data: Any) -> list:
-        """Extract rows from various SQL API response formats"""
-        
         if isinstance(data, list):
-            # Direct array of row objects
             return data
         elif isinstance(data, dict):
-            # Try common SQL response formats
-            for key in ["rows", "results", "data", "records"]:
+            for key in ("rows", "results", "data", "records"):
                 if key in data and isinstance(data[key], list):
                     return data[key]
-            
-            # If it's a single result object, wrap in array
             if any(isinstance(v, (str, int, float, bool, type(None))) for v in data.values()):
                 return [data]
-            
-            # Empty result
             return []
         else:
-            logger.warning(f"⚠️ Unexpected SQL response format: {type(data)}")
+            logger.warning(f"Unexpected SQL response format: {type(data)}")
             return []
-    
-    @staticmethod
-    def _create_dataframe(data: list) -> pl.DataFrame:
-        """Create Polars DataFrame from SQL results"""
-        
-        if not data:
-            # Return empty DataFrame with minimal structure
-            return pl.DataFrame({"_empty": []})
-        
-        try:
-            # Use Polars to create DataFrame from list of dictionaries
-            df = pl.DataFrame(data)
-            logger.info(f"📋 Created DataFrame: {len(df)} rows × {len(df.columns)} columns")
-            return df
-            
-        except Exception as e:
-            raise ValueError(f"Failed to create DataFrame from SQL results: {str(e)}")
-    
-    @staticmethod
-    def _convert_to_parquet(df: pl.DataFrame) -> bytes:
-        """Convert DataFrame to optimized parquet format"""
-        
-        buffer = BytesIO()
-        
-        df.write_parquet(
-            buffer,
-            compression="snappy",
-            use_pyarrow=False,
-            statistics=True,
-            row_group_size=50000
-        )
-        
-        parquet_data = buffer.getvalue()
-        logger.info(f"📦 Generated parquet: {len(parquet_data)/1024/1024:.2f}MB")
-        
-        return parquet_data
-    
+
     @staticmethod
     async def _upload_parquet(output_url: str, parquet_data: bytes) -> None:
-        """Upload parquet data to R2 using signed URL"""
-        
         async with httpx.AsyncClient(timeout=300) as client:
             response = await client.put(
                 output_url,
@@ -278,36 +215,5 @@ class SqlConverter:
                 headers={"Content-Type": "application/x-parquet"}
             )
             response.raise_for_status()
-            
-        logger.info(f"📤 Uploaded parquet to R2: {len(parquet_data)/1024/1024:.2f}MB")
-    
-    @staticmethod
-    def _generate_schema(df: pl.DataFrame) -> Dict[str, Any]:
-        """Generate schema information for the dataset"""
-        
-        fields = []
-        for col, dtype in zip(df.columns, df.dtypes):
-            # Skip internal fields
-            if col.startswith('_') and col != '_empty':
-                continue
-                
-            field_info: Dict[str, Any] = {
-                "name": col,
-                "type": str(dtype),
-                "polars_type": str(dtype)
-            }
-            
-            # Add nullability info
-            try:
-                field_info["nullable"] = df.select(pl.col(col).is_null().any()).item()
-            except:
-                field_info["nullable"] = True
-            
-            fields.append(field_info)
-        
-        return {
-            "fields": fields,
-            "format": "parquet",
-            "encoding": "utf-8",
-            "source": "sql"
-        }
+
+        logger.info(f"Uploaded parquet: {len(parquet_data)/1024/1024:.2f}MB")

@@ -1,8 +1,9 @@
-import polars as pl
+import duckdb
 import httpx
 import logging
 import re
-from io import BytesIO
+import tempfile
+import os
 from typing import Dict, Any, List, Optional
 from ..models.conversionRequest import (
     ColumnSchema, SchemaInfo, ValidationWarning
@@ -10,11 +11,23 @@ from ..models.conversionRequest import (
 
 logger = logging.getLogger(__name__)
 
+_NUMERIC_TYPES = {"INTEGER", "BIGINT", "HUGEINT", "SMALLINT", "TINYINT", "FLOAT", "DOUBLE", "DECIMAL", "REAL"}
+_DATE_TYPES = {"DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "TIMESTAMPTZ", "INTERVAL"}
+
+
+def _is_numeric(duckdb_type: str) -> bool:
+    return any(t in duckdb_type.upper() for t in _NUMERIC_TYPES)
+
+
+def _is_date(duckdb_type: str) -> bool:
+    return any(t in duckdb_type.upper() for t in _DATE_TYPES)
+
+
 class SchemaInferenceService:
-    """Service for inferring schema from data files"""
+    """Schema inference service using DuckDB"""
 
     MAX_SAMPLE_SIZE = 10000
-    TIMEOUT_SECONDS = 300  # 5 minutes for schema inference
+    TIMEOUT_SECONDS = 300
 
     @staticmethod
     async def infer_schema(
@@ -25,26 +38,25 @@ class SchemaInferenceService:
         """Infer schema from file and return detailed column information"""
 
         try:
-            logger.info(f"🔍 Inferring schema for {file_format} file (sample: {sample_size} rows)")
+            logger.info(f"Inferring schema for {file_format} file (sample: {sample_size} rows)")
 
-            # 1. Download file
             file_content = await SchemaInferenceService._download_file(source_url)
 
-            # 2. Parse file and get sample
-            df = SchemaInferenceService._parse_file_sample(
-                file_content, file_format, sample_size
-            )
+            # Write to temp file so DuckDB can read it
+            with tempfile.NamedTemporaryFile(
+                delete=False, suffix=f".{file_format}"
+            ) as tmp:
+                tmp.write(file_content)
+                tmp_path = tmp.name
 
-            # 3. Infer detailed schema
-            schema_info = SchemaInferenceService._infer_detailed_schema(df)
+            try:
+                schema_info, sample_data, warnings = SchemaInferenceService._analyze_file(
+                    tmp_path, file_format, sample_size, len(file_content)
+                )
+            finally:
+                os.unlink(tmp_path)
 
-            # 4. Generate sample data
-            sample_data = df.head(min(100, sample_size)).to_dicts()
-
-            # 5. Detect warnings
-            warnings = SchemaInferenceService._detect_warnings(df)
-
-            logger.info(f"✅ Schema inferred: {len(df.columns)} columns, {len(df)} rows")
+            logger.info(f"Schema inferred: {schema_info.total_columns} columns, {schema_info.total_rows} rows")
 
             return {
                 "success": True,
@@ -54,203 +66,222 @@ class SchemaInferenceService:
             }
 
         except Exception as e:
-            logger.error(f"❌ Schema inference failed: {str(e)}")
+            logger.error(f"Schema inference failed: {str(e)}")
             raise
 
     @staticmethod
     async def _download_file(source_url: str) -> bytes:
-        """Download file from R2"""
         async with httpx.AsyncClient(timeout=SchemaInferenceService.TIMEOUT_SECONDS) as client:
             response = await client.get(source_url)
             response.raise_for_status()
             return response.content
 
     @staticmethod
-    def _parse_file_sample(
-        content: bytes,
-        file_format: str,
-        sample_size: int
-    ) -> pl.DataFrame:
-        """Parse file and return sample DataFrame"""
-
+    def _build_read_expr(
+        conn: duckdb.DuckDBPyConnection,
+        file_path: str,
+        file_format: str
+    ) -> str:
         if file_format == "csv":
-            return pl.read_csv(
-                BytesIO(content),
-                n_rows=sample_size,
-                try_parse_dates=True,
-                null_values=["", "NULL", "null", "N/A", "n/a"],
-                ignore_errors=False  # Don't ignore errors for validation
-            )
-
+            return f"read_csv('{file_path}', null_padding=true, try_parse_dates=true)"
         elif file_format == "tsv":
-            return pl.read_csv(
-                BytesIO(content),
-                separator='\t',
-                n_rows=sample_size,
-                try_parse_dates=True,
-                null_values=["", "NULL", "null", "N/A", "n/a"],
-                ignore_errors=False
-            )
-
-        elif file_format == "excel":
-            # Read full file, then take sample
-            df = pl.read_excel(
-                BytesIO(content),
-                engine='calamine',
-                infer_schema_length=sample_size
-            )
-            return df.head(sample_size)
-
+            return f"read_csv('{file_path}', sep='\\t', null_padding=true, try_parse_dates=true)"
         elif file_format == "parquet":
-            # Read parquet and take sample
-            df = pl.read_parquet(BytesIO(content))
-            return df.head(sample_size)
-
+            return f"read_parquet('{file_path}')"
         elif file_format == "json":
-            df = pl.read_json(BytesIO(content))
-            return df.head(sample_size)
-
+            return f"read_json('{file_path}', auto_detect=true)"
+        elif file_format == "excel":
+            conn.execute("INSTALL excel; LOAD excel;")
+            return f"read_xlsx('{file_path}')"
         else:
             raise ValueError(f"Unsupported format for schema inference: {file_format}")
 
     @staticmethod
-    def _infer_detailed_schema(df: pl.DataFrame) -> SchemaInfo:
-        """Generate detailed schema information"""
+    def _analyze_file(
+        file_path: str,
+        file_format: str,
+        sample_size: int,
+        file_size_bytes: int
+    ):
+        conn = duckdb.connect()
+        try:
+            memory_limit = os.getenv("DUCKDB_MEMORY_LIMIT", "6GB")
+            conn.execute(f"SET memory_limit = '{memory_limit}'")
 
-        columns = []
+            read_expr = SchemaInferenceService._build_read_expr(conn, file_path, file_format)
 
-        for col_name in df.columns:
-            col = df[col_name]
-            dtype = col.dtype
+            # Create an in-memory view limited to sample_size
+            conn.execute(f"""
+                CREATE VIEW sample_data AS
+                SELECT * FROM {read_expr}
+                LIMIT {sample_size}
+            """)
 
-            col_schema = ColumnSchema(
-                name=col_name,
-                inferred_type=str(dtype),
-                nullable=col.null_count() > 0,
-                null_count=col.null_count(),
-                unique_count=col.n_unique(),
-                sample_values=col.drop_nulls().head(5).to_list()
+            # Get column metadata
+            desc = conn.execute("DESCRIBE sample_data").fetchall()
+            total_rows = conn.execute("SELECT COUNT(*) FROM sample_data").fetchone()[0]
+
+            columns = []
+            for row in desc:
+                col_name = row[0]
+                col_type = row[1]
+
+                # Compute basic stats
+                stats = conn.execute(f"""
+                    SELECT
+                        COUNT(*) - COUNT("{col_name}") AS null_count,
+                        COUNT(DISTINCT "{col_name}") AS unique_count
+                    FROM sample_data
+                """).fetchone()
+
+                null_count = stats[0]
+                unique_count = stats[1]
+
+                sample_vals = conn.execute(f"""
+                    SELECT "{col_name}" FROM sample_data
+                    WHERE "{col_name}" IS NOT NULL
+                    LIMIT 5
+                """).fetchall()
+                sample_values = [row[0] for row in sample_vals]
+
+                col_schema = ColumnSchema(
+                    name=col_name,
+                    inferred_type=col_type,
+                    nullable=null_count > 0,
+                    null_count=null_count,
+                    unique_count=unique_count,
+                    sample_values=sample_values
+                )
+
+                # String format detection
+                if "VARCHAR" in col_type.upper() or "TEXT" in col_type.upper():
+                    detected = SchemaInferenceService._detect_string_format(
+                        [str(v) for v in sample_values[:20]]
+                    )
+                    if detected:
+                        col_schema.detected_format = detected
+
+                # Numeric min/max
+                elif _is_numeric(col_type):
+                    try:
+                        minmax = conn.execute(
+                            f'SELECT MIN("{col_name}"), MAX("{col_name}") FROM sample_data'
+                        ).fetchone()
+                        if minmax[0] is not None:
+                            col_schema.min_value = float(minmax[0])
+                        if minmax[1] is not None:
+                            col_schema.max_value = float(minmax[1])
+                    except Exception:
+                        pass
+
+                # Date min/max
+                elif _is_date(col_type):
+                    try:
+                        minmax = conn.execute(
+                            f'SELECT MIN("{col_name}"), MAX("{col_name}") FROM sample_data'
+                        ).fetchone()
+                        if minmax[0] is not None:
+                            col_schema.min_value = str(minmax[0])
+                        if minmax[1] is not None:
+                            col_schema.max_value = str(minmax[1])
+                    except Exception:
+                        pass
+
+                columns.append(col_schema)
+
+            schema_info = SchemaInfo(
+                columns=columns,
+                total_rows=total_rows,
+                total_columns=len(desc),
+                file_size_bytes=file_size_bytes
             )
 
-            # Detect special formats for string columns
-            if dtype == pl.Utf8:
-                detected_format = SchemaInferenceService._detect_string_format(col)
-                if detected_format:
-                    col_schema.detected_format = detected_format
+            # Get sample data as list of dicts
+            raw_sample = conn.execute("SELECT * FROM sample_data LIMIT 100").fetchall()
+            col_names = [d[0] for d in desc]
+            sample_data = [dict(zip(col_names, row)) for row in raw_sample]
 
-            # Add min/max for numeric and date columns
-            elif dtype.is_numeric():
-                try:
-                    min_val = col.min()
-                    max_val = col.max()
-                    if min_val is not None and isinstance(min_val, (int, float)):
-                        col_schema.min_value = float(min_val)
-                    if max_val is not None and isinstance(max_val, (int, float)):
-                        col_schema.max_value = float(max_val)
-                except Exception:
-                    pass
+            warnings = SchemaInferenceService._detect_warnings(conn, desc)
 
-            elif dtype in [pl.Date, pl.Datetime]:
-                try:
-                    min_val = col.min()
-                    max_val = col.max()
-                    if min_val is not None:
-                        col_schema.min_value = str(min_val)
-                    if max_val is not None:
-                        col_schema.max_value = str(max_val)
-                except Exception:
-                    pass
+            return schema_info, sample_data, warnings
 
-            columns.append(col_schema)
-
-        estimated_size = df.estimated_size()
-
-        return SchemaInfo(
-            columns=columns,
-            total_rows=len(df),
-            total_columns=len(df.columns),
-            file_size_bytes=int(estimated_size) if estimated_size is not None else None
-        )
+        finally:
+            conn.close()
 
     @staticmethod
-    def _detect_string_format(col: pl.Series) -> Optional[str]:
-        """Detect special formats in string columns"""
-
-        # Get non-null values
-        valid_values = col.drop_nulls()
-
-        if len(valid_values) == 0:
+    def _detect_string_format(sample: List[str]) -> Optional[str]:
+        """Detect special formats in a list of string values"""
+        if not sample:
             return None
 
-        # Take sample
-        sample = valid_values.head(20).to_list()
-
-        # Email pattern
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if sum(bool(re.match(email_pattern, str(v))) for v in sample) / len(sample) > 0.8:
+        if sum(bool(re.match(email_pattern, v)) for v in sample) / len(sample) > 0.8:
             return "email"
 
-        # URL pattern
         url_pattern = r'^https?://'
-        if sum(bool(re.match(url_pattern, str(v))) for v in sample) / len(sample) > 0.8:
+        if sum(bool(re.match(url_pattern, v)) for v in sample) / len(sample) > 0.8:
             return "url"
 
-        # Phone pattern (simple)
         phone_pattern = r'^\+?[\d\s\-\(\)]{10,}$'
-        if sum(bool(re.match(phone_pattern, str(v))) for v in sample) / len(sample) > 0.8:
+        if sum(bool(re.match(phone_pattern, v)) for v in sample) / len(sample) > 0.8:
             return "phone"
 
-        # UUID pattern
         uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-        if sum(bool(re.match(uuid_pattern, str(v).lower())) for v in sample) / len(sample) > 0.8:
+        if sum(bool(re.match(uuid_pattern, v.lower())) for v in sample) / len(sample) > 0.8:
             return "uuid"
 
         return None
 
     @staticmethod
-    def _detect_warnings(df: pl.DataFrame) -> List[ValidationWarning]:
-        """Detect data quality warnings"""
-
+    def _detect_warnings(
+        conn: duckdb.DuckDBPyConnection,
+        desc: list
+    ) -> List[ValidationWarning]:
+        """Detect data quality warnings using SQL"""
         warnings = []
+        total = conn.execute("SELECT COUNT(*) FROM sample_data").fetchone()[0]
 
-        for col_name in df.columns:
-            col = df[col_name]
-            dtype = col.dtype
+        for row in desc:
+            col_name = row[0]
+            col_type = row[1]
 
-            # Check for type inconsistencies (numeric columns with unparseable values)
-            if dtype == pl.Utf8:
-                # Check if column looks numeric but couldn't be parsed
-                non_null = col.drop_nulls()
-                if len(non_null) > 0:
-                    # Try to see if values look like numbers
+            # High null percentage
+            null_count = conn.execute(
+                f'SELECT COUNT(*) - COUNT("{col_name}") FROM sample_data'
+            ).fetchone()[0]
+            if total > 0 and (null_count / total) * 100 > 50:
+                warnings.append(ValidationWarning(
+                    column=col_name,
+                    issue="high_null_percentage",
+                    message=f"Column has {null_count / total * 100:.1f}% null values",
+                    affected_rows=None
+                ))
+
+            # Type inconsistencies: VARCHAR columns that look numeric
+            if "VARCHAR" in col_type.upper() or "TEXT" in col_type.upper():
+                sample_vals = conn.execute(f"""
+                    SELECT "{col_name}", ROW_NUMBER() OVER () AS rn
+                    FROM sample_data
+                    WHERE "{col_name}" IS NOT NULL
+                    LIMIT 100
+                """).fetchall()
+
+                if sample_vals:
                     numeric_like = sum(
-                        bool(re.match(r'^-?\d+\.?\d*$', str(v)))
-                        for v in non_null.head(20).to_list()
+                        bool(re.match(r'^-?\d+\.?\d*$', str(v[0])))
+                        for v in sample_vals[:20]
                     )
-
-                    if numeric_like / min(20, len(non_null)) > 0.5:
-                        # Find non-numeric values
-                        non_numeric_rows = []
-                        for i, val in enumerate(col.to_list()[:100]):
-                            if val is not None and not re.match(r'^-?\d+\.?\d*$', str(val)):
-                                non_numeric_rows.append(i + 1)
-
+                    if len(sample_vals) > 0 and numeric_like / min(20, len(sample_vals)) > 0.5:
+                        non_numeric_rows = [
+                            int(v[1]) for v in sample_vals
+                            if not re.match(r'^-?\d+\.?\d*$', str(v[0]))
+                        ]
                         if non_numeric_rows:
                             warnings.append(ValidationWarning(
                                 column=col_name,
                                 issue="type_inconsistency",
-                                message=f"Column looks numeric but contains non-numeric values",
-                                affected_rows=non_numeric_rows[:10]  # Show first 10
+                                message="Column looks numeric but contains non-numeric values",
+                                affected_rows=non_numeric_rows[:10]
                             ))
-
-            # Check for high null percentage
-            null_percentage = (col.null_count() / len(col)) * 100
-            if null_percentage > 50:
-                warnings.append(ValidationWarning(
-                    column=col_name,
-                    issue="high_null_percentage",
-                    message=f"Column has {null_percentage:.1f}% null values",
-                    affected_rows=None
-                ))
 
         return warnings
