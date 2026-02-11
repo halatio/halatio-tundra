@@ -113,7 +113,6 @@ class ConnectorType(str, Enum):
     postgresql = "postgresql"
     mysql = "mysql"
     sqlite = "sqlite"
-    mssql = "mssql"
     mariadb = "mariadb"
     redshift = "redshift"
 

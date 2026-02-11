@@ -221,8 +221,8 @@ Rate limit: 10 requests/minute.
 #### `GET /connectors`
 ```json
 {
-  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "mariadb", "redshift"],
-  "count": 6
+  "connectors": ["postgresql", "mysql", "sqlite", "mariadb", "redshift"],
+  "count": 5
 }
 ```
 
@@ -245,7 +245,6 @@ Rate limit: 10 requests/minute.
 | PostgreSQL | `postgres` extension (`ATTACH … TYPE postgres`) |
 | MySQL / MariaDB | `mysql` extension (`ATTACH … TYPE mysql`) |
 | SQLite | Built-in (`ATTACH … TYPE sqlite`) |
-| MS SQL Server | ADBC driver (`CREATE SECRET TYPE adbc`) |
 | Redshift | PostgreSQL-compatible connector |
 
 ---
