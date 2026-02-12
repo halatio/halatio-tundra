@@ -15,7 +15,7 @@ RUN mkdir -p /opt/duckdb_extensions && \
     python -c "\
 import duckdb, os; \
 conn = duckdb.connect(config={'extension_directory': '/opt/duckdb_extensions', 'home_directory': '/root'}); \
-[conn.execute(f'INSTALL {e}') for e in ['httpfs', 'excel', 'postgres', 'mysql']]; \
+[conn.execute(f'INSTALL {e}') for e in ['httpfs', 'excel', 'postgres', 'mysql', 'spatial', 'json']]; \
 conn.close(); \
 print('DuckDB extensions pre-installed')" && \
     chmod -R 755 /opt/duckdb_extensions

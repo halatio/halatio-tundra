@@ -51,6 +51,8 @@ POST /convert/file  ──► lookup source_id       ──► Supabase (sources
 | `DUCKDB_THREADS` | | DuckDB thread count (default: `2`) |
 | `DUCKDB_TEMP_DIR` | | Spill directory (default: `/tmp/duckdb_swap`) |
 | `DUCKDB_MAX_TEMP_DIR_SIZE` | | Max spill size (default: `1GB`) |
+| `USE_ADBC_DRIVER` | | Set to `true` to use ADBC for PostgreSQL/Redshift (see below) |
+| `MAX_PROCESSING_TIME_MINUTES` | | Async timeout for conversions (default: `10`) |
 
 ---
 
@@ -243,12 +245,30 @@ Rate limit: 10 requests/minute.
 
 ## Supported Database Connectors
 
-| Connector | DuckDB mechanism |
-|-----------|-----------------|
-| PostgreSQL | `postgres` extension (`ATTACH … TYPE postgres`) |
-| MySQL / MariaDB | `mysql` extension (`ATTACH … TYPE mysql`) |
-| SQLite | Built-in (`ATTACH … TYPE sqlite`) |
-| Redshift | PostgreSQL-compatible connector |
+| Connector | Default engine | ADBC alternative |
+|-----------|---------------|-----------------|
+| PostgreSQL | `postgres` extension (`ATTACH … TYPE postgres`) | ✓ `adbc-driver-postgresql` |
+| MySQL / MariaDB | `mysql` extension (`ATTACH … TYPE mysql`) | — |
+| SQLite | Built-in (`ATTACH … TYPE sqlite`) | — |
+| Redshift | PostgreSQL-compatible connector | ✓ `adbc-driver-postgresql` |
+
+---
+
+## ADBC Support (Optional)
+
+For PostgreSQL and Redshift extractions, you can enable **ADBC** (Arrow Database Connectivity) for better performance on large result sets:
+
+```bash
+export USE_ADBC_DRIVER=true
+```
+
+Requires `adbc-driver-postgresql>=1.1.0` (included in `requirements.txt`).
+
+**How it works:** ADBC uses PostgreSQL's native COPY protocol to stream data directly as Arrow columnar format, bypassing row-by-row serialisation. Tundra then hands the in-memory Arrow table to DuckDB for Parquet/R2 writing, so direct R2 writes are fully preserved.
+
+**Performance benefit:** Typically 5–10× faster for >100 k-row extractions compared to the DuckDB postgres scanner, with lower peak memory usage due to zero-copy Arrow transfer.
+
+**Fallback behaviour:** If `adbc_driver_postgresql` is not installed, Tundra logs a warning and falls back to the DuckDB postgres scanner automatically — no downtime.
 
 ---
 
