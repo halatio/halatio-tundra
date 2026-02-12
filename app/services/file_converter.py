@@ -1,3 +1,4 @@
+import asyncio
 import duckdb
 import time
 import logging
@@ -9,6 +10,9 @@ from .connectors.duckdb_base import _make_duckdb_config
 import anyio
 
 logger = logging.getLogger(__name__)
+
+# Timeout for blocking file conversion operations (matches MAX_PROCESSING_TIME_MINUTES)
+_CONVERSION_TIMEOUT_SECONDS = int(os.getenv("MAX_PROCESSING_TIME_MINUTES", "10")) * 60
 
 
 class FileConverter:
@@ -39,13 +43,15 @@ class FileConverter:
         options = options or {}
 
         try:
-            result = await anyio.to_thread.run_sync(
-                FileConverter._convert_with_duckdb,
-                source_path,
-                output_path,
-                file_format,
-                options,
-            )
+            async with asyncio.timeout(_CONVERSION_TIMEOUT_SECONDS):
+                result = await anyio.to_thread.run_sync(
+                    FileConverter._convert_with_duckdb,
+                    source_path,
+                    output_path,
+                    file_format,
+                    options,
+                    cancellable=True,
+                )
 
             processing_time = time.time() - start_time
 
@@ -68,6 +74,19 @@ class FileConverter:
             logger.info(f"Conversion complete: {result['rows']} rows")
             return {"success": True, "metadata": metadata.dict()}
 
+        except asyncio.TimeoutError:
+            logger.error(
+                "File conversion timed out after %d seconds: %s",
+                _CONVERSION_TIMEOUT_SECONDS,
+                source_path,
+            )
+            return {
+                "success": False,
+                "error": f"Conversion exceeded {_CONVERSION_TIMEOUT_SECONDS}s timeout",
+            }
+        except asyncio.CancelledError:
+            logger.warning("File conversion cancelled: %s", source_path)
+            raise
         except Exception as e:
             logger.error(f"Conversion failed: {e}")
             return {"success": False, "error": str(e)}

@@ -1,5 +1,7 @@
 """Connector factory for creating connector instances"""
 
+import os
+import logging
 from typing import Dict, Any
 from .base import BaseConnector
 
@@ -8,19 +10,51 @@ from .postgres_duckdb import PostgresDuckDBConnector
 from .mysql_duckdb import MySQLDuckDBConnector
 from .sqlite_duckdb import SQLiteDuckDBConnector
 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# ADBC feature flag
+#
+# Set USE_ADBC_DRIVER=true to use the ADBC PostgreSQL connector instead of
+# the DuckDB postgres scanner.  Requires adbc-driver-postgresql >= 1.1.0.
+# Falls back to the DuckDB connector if the package is not installed.
+# ---------------------------------------------------------------------------
+
+def _resolve_postgres_connector():
+    """Return the PostgreSQL connector class to use based on USE_ADBC_DRIVER env flag."""
+    if os.getenv("USE_ADBC_DRIVER", "").lower() not in ("1", "true", "yes"):
+        return PostgresDuckDBConnector
+
+    try:
+        import adbc_driver_postgresql  # noqa: F401 — availability check only
+        from .postgres_adbc import PostgresADBCConnector
+        logger.info(
+            "USE_ADBC_DRIVER=true — using ADBC PostgreSQL connector "
+            "(adbc_driver_postgresql detected)"
+        )
+        return PostgresADBCConnector
+    except ImportError:
+        logger.warning(
+            "USE_ADBC_DRIVER=true but adbc_driver_postgresql is not installed. "
+            "Falling back to DuckDB postgres scanner. "
+            "Install with: pip install adbc-driver-postgresql>=1.1.0"
+        )
+        return PostgresDuckDBConnector
+
+
 class ConnectorFactory:
     """Factory for creating connector instances"""
 
     # Map of connector types to classes
     CONNECTOR_TYPES = {
         # DuckDB-based connectors
-        "postgresql": PostgresDuckDBConnector,
+        "postgresql": None,  # resolved at runtime via _resolve_postgres_connector()
         "mysql": MySQLDuckDBConnector,
         "sqlite": SQLiteDuckDBConnector,
 
         # Protocol aliases
         "mariadb": MySQLDuckDBConnector,  # MariaDB uses MySQL protocol
-        "redshift": PostgresDuckDBConnector,  # Redshift uses PostgreSQL protocol
+        "redshift": None,  # resolved at runtime — same flag as postgresql
     }
 
     @classmethod
@@ -30,7 +64,10 @@ class ConnectorFactory:
         credentials: Dict[str, Any]
     ) -> BaseConnector:
         """
-        Create connector instance
+        Create connector instance.
+
+        For PostgreSQL and Redshift, the actual class is chosen at call time
+        based on the USE_ADBC_DRIVER environment flag.
 
         Args:
             connector_type: Type of connector (postgresql, mysql, sqlite, mariadb, redshift)
@@ -39,13 +76,16 @@ class ConnectorFactory:
         Returns:
             Connector instance
         """
-        connector_class = cls.CONNECTOR_TYPES.get(connector_type)
-
-        if not connector_class:
+        if connector_type not in cls.CONNECTOR_TYPES:
             raise ValueError(
                 f"Unknown connector type: {connector_type}. "
                 f"Available: {list(cls.CONNECTOR_TYPES.keys())}"
             )
+
+        if connector_type in ("postgresql", "redshift"):
+            connector_class = _resolve_postgres_connector()
+        else:
+            connector_class = cls.CONNECTOR_TYPES[connector_type]
 
         return connector_class(credentials)
 
