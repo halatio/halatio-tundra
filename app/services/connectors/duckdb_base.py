@@ -1,5 +1,6 @@
 """Base DuckDB connector with config-dict connection and R2 support"""
 
+import asyncio
 import duckdb
 import os
 import re
@@ -13,6 +14,9 @@ import anyio
 
 logger = logging.getLogger(__name__)
 
+# Timeout for blocking DB extraction operations (matches MAX_PROCESSING_TIME_MINUTES)
+_EXTRACTION_TIMEOUT_SECONDS = int(os.getenv("MAX_PROCESSING_TIME_MINUTES", "10")) * 60
+
 # Safe table/schema name pattern (alphanumeric, underscores, dots)
 _SAFE_IDENTIFIER = re.compile(r"^[a-zA-Z0-9_\.]+$")
 
@@ -24,13 +28,32 @@ def _make_duckdb_config() -> Dict[str, Any]:
     Passing config at connect() time avoids the Cloud Run cgroup memory bug
     where DuckDB reads host memory instead of container limits when SET is used
     after connection.
+
+    DuckDB 1.4+ best practices: 1-4 GB per thread is optimal; warn if below 1 GB.
     """
     temp_dir = os.getenv("DUCKDB_TEMP_DIR", "/tmp/duckdb_swap")
     os.makedirs(temp_dir, exist_ok=True)
+    threads = int(os.getenv("DUCKDB_THREADS", "2"))
+    memory_limit_str = os.getenv("DUCKDB_MEMORY_LIMIT", "6GB")
+
+    # Warn when memory per thread falls below 1 GB (DuckDB 1.4+ recommendation)
+    try:
+        memory_gb = float(memory_limit_str.upper().rstrip("GB").rstrip("MB"))
+        if memory_limit_str.upper().endswith("MB"):
+            memory_gb /= 1024
+        if memory_gb / threads < 1.0:
+            logger.warning(
+                "DuckDB memory per thread (%.1f GB) is below the recommended 1 GB minimum. "
+                "Consider reducing DUCKDB_THREADS or increasing DUCKDB_MEMORY_LIMIT.",
+                memory_gb / threads,
+            )
+    except ValueError:
+        pass  # Non-standard memory string; skip ratio check
+
     config: Dict[str, Any] = {
-        "memory_limit": os.getenv("DUCKDB_MEMORY_LIMIT", "6GB"),
+        "memory_limit": memory_limit_str,
         "temp_directory": temp_dir,
-        "threads": int(os.getenv("DUCKDB_THREADS", "2")),
+        "threads": threads,
         "max_temp_directory_size": os.getenv("DUCKDB_MAX_TEMP_DIR_SIZE", "1GB"),
         "preserve_insertion_order": False,
         # Write persistent secrets to /tmp so Cloud Run can create the dir
@@ -175,13 +198,26 @@ class DuckDBBaseConnector(ABC):
 
         logger.info(f"Extracting with DuckDB: {query[:120]}…")
 
-        result = await anyio.to_thread.run_sync(
-            self._extract_sync,
-            query,
-            output_path,
-            compression,
-            row_group_size,
-        )
+        try:
+            async with asyncio.timeout(_EXTRACTION_TIMEOUT_SECONDS):
+                result = await anyio.to_thread.run_sync(
+                    self._extract_sync,
+                    query,
+                    output_path,
+                    compression,
+                    row_group_size,
+                    cancellable=True,
+                )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Extraction timed out after %d seconds: %s",
+                _EXTRACTION_TIMEOUT_SECONDS,
+                query[:120],
+            )
+            raise
+        except asyncio.CancelledError:
+            logger.warning("Extraction cancelled: %s", query[:120])
+            raise
 
         logger.info(
             f"Extracted {result['rows']} rows, {result['columns']} cols "
