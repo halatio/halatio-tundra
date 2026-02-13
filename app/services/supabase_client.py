@@ -4,6 +4,7 @@ import logging
 from typing import Any, Dict, Optional
 from supabase import create_client, Client, ClientOptions
 from ..config import settings
+from .resilience import supabase_breaker, should_trip_breaker
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,15 @@ async def get_source(source_id: str) -> Dict[str, Any]:
         ValueError: if the source is not found
     """
     client = get_supabase_client()
-    response = (
-        client.table("sources")
-        .select("id, organization_id, connector_type, source_type, current_version")
-        .eq("id", source_id)
-        .single()
-        .execute()
+    response = await supabase_breaker.call(
+        lambda: (
+            client.table("sources")
+            .select("id, organization_id, connector_type, source_type, current_version")
+            .eq("id", source_id)
+            .single()
+            .execute()
+        ),
+        should_trip=should_trip_breaker,
     )
 
     if not response.data:
@@ -64,14 +68,17 @@ async def create_source_version(
     Returns the created record with id.
     """
     client = get_supabase_client()
-    response = (
-        client.table("source_versions")
-        .insert({
-            "source_id": source_id,
-            "version": version,
-            "status": status,
-        })
-        .execute()
+    response = await supabase_breaker.call(
+        lambda: (
+            client.table("source_versions")
+            .insert({
+                "source_id": source_id,
+                "version": version,
+                "status": status,
+            })
+            .execute()
+        ),
+        should_trip=should_trip_breaker,
     )
 
     record = response.data[0]
@@ -104,7 +111,10 @@ async def update_source_version(
     if error_message is not None:
         payload["error_message"] = error_message
 
-    client.table("source_versions").update(payload).eq("id", version_id).execute()
+    await supabase_breaker.call(
+        lambda: client.table("source_versions").update(payload).eq("id", version_id).execute(),
+        should_trip=should_trip_breaker,
+    )
     logger.info(f"Updated source_version {version_id}: status={status}")
 
 
@@ -114,9 +124,12 @@ async def update_source_current_version(
 ) -> None:
     """Update the sources.current_version field."""
     client = get_supabase_client()
-    client.table("sources").update({"current_version": version}).eq(
-        "id", source_id
-    ).execute()
+    await supabase_breaker.call(
+        lambda: client.table("sources").update({"current_version": version}).eq(
+            "id", source_id
+        ).execute(),
+        should_trip=should_trip_breaker,
+    )
     logger.info(f"Updated source {source_id} current_version={version}")
 
 
@@ -126,7 +139,10 @@ async def update_source_extraction_query(
 ) -> None:
     """Store SQL query in sources.extraction_query field."""
     client = get_supabase_client()
-    client.table("sources").update({"extraction_query": query}).eq(
-        "id", source_id
-    ).execute()
+    await supabase_breaker.call(
+        lambda: client.table("sources").update({"extraction_query": query}).eq(
+            "id", source_id
+        ).execute(),
+        should_trip=should_trip_breaker,
+    )
     logger.info(f"Updated source {source_id} extraction_query")

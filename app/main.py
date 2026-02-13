@@ -33,6 +33,7 @@ from .services.supabase_client import (
 )
 from .services.connectors.factory import ConnectorFactory
 from .services.connectors.duckdb_base import _make_duckdb_config
+from .services.resilience import CircuitBreakerOpenError
 from .utils import raise_http_exception, ValidationError, DatabaseError
 
 logging.basicConfig(level=logging.INFO)
@@ -279,6 +280,9 @@ async def convert_file(request: Request, body: FileConversionRequest):
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:
@@ -318,6 +322,9 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
 
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Schema inference failed: {e}")
         raise HTTPException(status_code=500, detail=f"Schema inference failed: {e}")
@@ -437,6 +444,15 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
                 error_message=str(e),
             )
         raise HTTPException(status_code=400, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Database conversion failed: {e}")
         if source_version:
