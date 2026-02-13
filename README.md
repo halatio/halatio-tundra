@@ -177,7 +177,7 @@ Converts a file already uploaded to R2 into Parquet. Creates a new version.
 }
 ```
 
-Rate limit: 10 requests/minute.
+Fallback app limit: 60 requests/minute (API Gateway quota is authoritative).
 
 ---
 
@@ -221,7 +221,7 @@ Reads a sample from the source file and returns column types and statistics.
 }
 ```
 
-Rate limit: 20 requests/minute.
+Fallback app limit: 120 requests/minute (API Gateway quota is authoritative).
 
 ---
 
@@ -245,7 +245,7 @@ Tests a database connection using temporary credentials (not stored).
 }
 ```
 
-Rate limit: 20 requests/minute.
+Fallback app limit: 120 requests/minute (API Gateway quota is authoritative).
 
 ---
 
@@ -290,7 +290,27 @@ Extracts a database table/query and writes Parquet to R2. Creates a new version 
 }
 ```
 
-Rate limit: 10 requests/minute.
+Fallback app limit: 60 requests/minute (API Gateway quota is authoritative).
+
+---
+
+## Gateway-First Quotas and 429 Behavior
+
+The API Gateway configuration in `openapi.yaml` is the **authoritative throttling layer**. Gateway enforces a shared `request_units` quota with per-operation costs:
+
+- Lightweight endpoints (`/`, `/health`, `/info`) cost **1** unit
+- `GET /convert/{proxy}` costs **5** units
+- `POST /test/{proxy}` costs **6** units
+- `POST /infer/{proxy}` costs **8** units
+- `POST /convert/{proxy}` costs **10** units
+
+With a `600` units/minute quota, expensive operations consume quota faster than lightweight health/info calls.
+
+### 429 responses
+
+- When gateway quota is exceeded, API Gateway returns **HTTP 429** before the request reaches FastAPI.
+- Backend SlowAPI limits remain enabled as a fallback guard if traffic bypasses gateway controls, and are intentionally more permissive.
+- Clients should treat 429 as retriable with backoff and retry after the quota window resets.
 
 ---
 
