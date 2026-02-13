@@ -31,10 +31,10 @@ class Settings(BaseSettings):
     SUPABASE_SECRET_KEY: str = Field(..., description="Supabase secret key (sb_secret_...)")
 
     # DuckDB
-    DUCKDB_MEMORY_LIMIT: str = Field("6GB", description="DuckDB memory limit")
-    DUCKDB_THREADS: int = Field(2, description="DuckDB thread count")
+    DUCKDB_MEMORY_LIMIT: str = Field("12GB", description="DuckDB memory limit")
+    DUCKDB_THREADS: int = Field(4, description="DuckDB thread count")
     DUCKDB_TEMP_DIR: str = Field("/tmp/duckdb_swap", description="DuckDB spill directory")
-    DUCKDB_MAX_TEMP_DIR_SIZE: str = Field("1GB", description="Max DuckDB temp directory size")
+    DUCKDB_MAX_TEMP_DIR_SIZE: str = Field("2GB", description="Max DuckDB temp directory size")
 
     class Config:
         env_file = ".env"
