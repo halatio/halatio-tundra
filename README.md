@@ -1,123 +1,242 @@
 # Halatio Tundra
 
-**Version 3.0.0** - Data conversion service for files and databases to Parquet format.
+**Version 4.0.0** — Data conversion service for files and databases to Parquet format.
 
 ## Overview
 
-Halatio Tundra converts data from various sources (files, databases) into optimized Parquet format. It provides fast, parallel database extraction using ConnectorX and supports multiple file formats with schema inference.
-
-## Quick Start
-
-All endpoints accept/return JSON and require signed URLs for storage operations.
+Halatio Tundra converts data from files and databases into optimised Parquet format. Built on **DuckDB**, it reads source files and writes Parquet output **directly to Cloudflare R2** — no temp files, no presigned URL management. Source metadata (org ID, file format, connector type) is looked up from Supabase, and each conversion creates a versioned record in the `source_versions` table.
 
 **Base URL:** `https://your-service.run.app`
 
-## Authentication & Credentials
+---
 
-### Database Credentials
-Database credentials are stored in Google Secret Manager for security:
+## Architecture
 
-1. **Test connection** with temporary credentials using `/test/database-connection`
-2. **Store credentials** in Secret Manager (external to this service)
-3. **Reference by ID** using `credentials_id` in conversion requests
-4. Credentials are cached for 1 hour
+```
+Client                  Tundra                      Infrastructure
+──────                  ──────                      ──────────────
+POST /convert/file  ──► lookup source_id       ──► Supabase (sources table)
+  { source_id }         create source_version (pending)
+                        DuckDB COPY r2://… → r2://… ──► Cloudflare R2
+                        update source_version (active)
+                        increment current_version  ──► Supabase
+```
 
-### Signed URLs
-All `output_url` parameters must be signed PUT URLs from one of:
-- `r2.cloudflarestorage.com` (Cloudflare R2)
-- `s3.amazonaws.com` (AWS S3)
-- `storage.googleapis.com` (Google Cloud Storage)
+### Key design decisions
+
+| Concern | Approach |
+|---------|----------|
+| Storage | DuckDB reads/writes R2 directly via a persistent secret (no httpx download/upload) |
+| Versioning | Each conversion creates a `source_versions` record; `sources.current_version` tracks the latest |
+| Bucket naming | Always `org-{org_id}` (created by Supabase Edge Function on org creation) |
+| Memory  | Config passed at `duckdb.connect(config=…)` time to respect Cloud Run cgroup limits |
+| Extensions | Pre-installed to `/opt/duckdb_extensions` at Docker build time; loaded with `autoload_known_extensions` at runtime |
+| Secrets | DuckDB R2 persistent secret written to `/tmp/.duckdb/stored_secrets/` at service startup |
+| Database credentials | Google Secret Manager (referenced by `credentials_id`) |
+| Source metadata | Supabase PostgREST API |
+
+---
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ENV` | ✓ | `dev`, `staging`, `production` |
+| `GCP_PROJECT_ID` | ✓ | Google Cloud project ID (Secret Manager) |
+| `SECRETS_JSON_PATH` | | Mounted JSON file containing runtime secrets (default: `/secrets/credentials.json`) |
+| `R2_SECRET_ID` |*| Secret Manager ID containing R2 credentials JSON (`access_key_id` + `secret_access_key`) |
+| `R2_SECRET_VERSION` | | Secret version for `R2_SECRET_ID` (default: `latest`) |
+| `CLOUDFLARE_ACCOUNT_ID` | ✓ | Cloudflare account ID (32-char hex) |
+| `SUPABASE_URL` | ✓ | Supabase project URL |
+| `SUPABASE_SECRET_ID` |*| Secret Manager ID containing Supabase service key |
+| `SUPABASE_SECRET_VERSION` | | Secret version for `SUPABASE_SECRET_ID` (default: `latest`) |
+| `DUCKDB_MEMORY_LIMIT` | | DuckDB memory cap (default: `6GB`) |
+| `DUCKDB_THREADS` | | DuckDB thread count (default: `2`) |
+| `DUCKDB_TEMP_DIR` | | Spill directory (default: `/tmp/duckdb_swap`) |
+| `DUCKDB_MAX_TEMP_DIR_SIZE` | | Max spill size (default: `1GB`) |
+| `MAX_PROCESSING_TIME_MINUTES` | | Async timeout for conversions (default: `10`) |
+
+`*` = provide one secure source (Secret Manager ID or mounted JSON file). Plain secret env vars are intended only as local-dev fallback.
+
+---
+
+## R2 Path Convention (Medallion Architecture)
+
+```
+org-{org_id}/
+├── uploads/{source_id}/               # User uploads land here via presigned URL
+│   └── {original_filename}            # Original uploaded file
+│
+├── raw/{source_id}/v{version}/        # Permanent archive after validation
+│   ├── data.{ext}                     # Original file moved from uploads/
+│   └── _manifest.json                 # Metadata (optional)
+│
+└── processed/{source_id}/v{version}/  # Query-ready Parquet
+    └── data.parquet                   # Converted file
+```
+
+| Function | Path |
+|----------|------|
+| `_source_path(org_id, source_id)` | `r2://org-{org_id}/uploads/{source_id}` |
+| `_output_path(org_id, source_id, version)` | `r2://org-{org_id}/processed/{source_id}/v{version}/data.parquet` |
+| `_raw_path(org_id, source_id, version, ext)` | `r2://org-{org_id}/raw/{source_id}/v{version}/data.{ext}` |
+
+The file format (csv, json, …) and `org_id` are read from the Supabase `sources` table via `source_id`.
+
+---
+
+## Versioning Workflow
+
+Each conversion follows this lifecycle:
+
+1. **Start** — Create a `source_versions` record with `status='pending'`
+2. **Process** — Convert the source to Parquet at `processed/{source_id}/v{version}/data.parquet`
+3. **Success** — Update the `source_versions` record to `status='active'` with metrics (`row_count`, `column_count`, `file_size_bytes`, `processing_time_seconds`), then increment `sources.current_version`
+4. **Failure** — Update the `source_versions` record to `status='error'` with `error_message`
+
+Version numbers are calculated as `sources.current_version + 1`.
+
+### Database Schema
+
+**sources** table fields used by Tundra:
+- `source_type` — enum: `file`, `database`, `api`
+- `connector_type` — string (e.g. `csv`, `postgresql`, `mysql`)
+- `current_version` — integer (default `0`)
+- `extraction_query` — text (nullable, stored for database sources)
+
+**source_versions** table:
+- `id` — UUID primary key
+- `source_id` — UUID foreign key to `sources.id`
+- `version` — integer (scoped to source_id)
+- `status` — enum: `pending`, `active`, `error`
+- `row_count`, `column_count`, `file_size_bytes`, `processing_time_seconds` — nullable metrics
+- `error_message` — text (nullable)
+- `created_at` — timestamptz
+
+---
 
 ## API Endpoints
 
-### Health & Info
+## CORS Policy
+
+The API CORS middleware only allows an explicit request-header allow-list for browser clients:
+
+- `Content-Type`
+- `Authorization`
+- `X-Request-ID`
+
+Current frontend/test clients in this repository send `Content-Type: application/json` and do not rely on additional custom headers.
+If a frontend starts sending a new custom header, update `allow_headers` in `app/main.py` explicitly as part of that change.
+
+### Health
 
 #### `GET /health`
-Basic health check for load balancers.
-
-**Response:**
 ```json
-{
-  "status": "healthy",
-  "service": "halatio-tundra",
-  "version": "3.0.0"
-}
+{ "status": "healthy", "service": "halatio-tundra", "version": "4.0.0" }
 ```
-
----
 
 #### `GET /health/deep`
-Health check with Secret Manager connectivity verification.
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "service": "halatio-tundra",
-  "version": "3.0.0",
-  "checks": {
-    "secret_manager": "healthy"
-  }
-}
-```
-
----
+Checks Secret Manager and Supabase connectivity. Returns per-check status.
 
 #### `GET /info`
-Get service capabilities and limits.
+Lists supported formats, connectors, limits, and feature flags.
 
-**Response:**
+---
+
+### File Conversion
+
+#### `POST /convert/file`
+
+Converts a file already uploaded to R2 into Parquet. Creates a new version.
+
+**Request:**
 ```json
 {
-  "service": "halatio-tundra",
-  "version": "3.0.0",
-  "capabilities": {
-    "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
-    "output_format": "parquet",
-    "max_file_size_mb": 500,
-    "supported_sources": ["file", "database"],
-    "database_connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"]
-  },
-  "limits": {
-    "max_processing_time_minutes": 10,
-    "max_memory_usage_gb": 2,
-    "max_rows_processed": 10000000
+  "source_id": "uuid",
+  "format": "csv",
+  "options": {
+    "column_mapping": { "old_name": "new_name" },
+    "type_overrides":  { "amount": "DOUBLE" },
+    "skip_rows":       [0, 1],
+    "delimiter":       ",",
+    "sheet_name":      "Sheet1"
   }
 }
 ```
 
----
-
-#### `GET /connectors`
-List available database connector types.
+- `source_id` — UUID from the Supabase `sources` table
+- `format` — optional override; if omitted, uses `connector_type` from the sources table
+- `options` — all fields optional
 
 **Response:**
 ```json
 {
-  "connectors": ["postgresql", "mysql", "sqlite", "mssql", "oracle", "mariadb", "redshift"],
-  "count": 7
+  "success": true,
+  "metadata": {
+    "version": 1,
+    "rows": 125000,
+    "columns": 8,
+    "column_schema": { "fields": [...] },
+    "file_size_mb": 2.4,
+    "processing_time_seconds": 1.8,
+    "source_type": "file"
+  }
 }
 ```
 
-**Supported Databases:**
-- **PostgreSQL** - Native connector via ConnectorX
-- **MySQL** - Native connector via ConnectorX
-- **SQLite** - File-based database connector
-- **MS SQL Server** (`mssql`) - Microsoft SQL Server connector
-- **Oracle** - Oracle Database connector
-- **MariaDB** - Uses MySQL protocol (alias for mysql connector)
-- **Redshift** - Uses PostgreSQL protocol (alias for postgresql connector)
-
-**Note:** BigQuery, Snowflake, ClickHouse, Google Sheets, and Stripe connectors are planned but not yet implemented.
+Fallback app limit: 60 requests/minute (API Gateway quota is authoritative).
 
 ---
 
-### Database Operations
+### Schema Inference
+
+#### `POST /infer/schema`
+
+Reads a sample from the source file and returns column types and statistics.
+
+**Request:**
+```json
+{
+  "source_id": "uuid",
+  "format": "csv",
+  "sample_size": 1000
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "schema": {
+    "columns": [
+      {
+        "name": "amount",
+        "inferred_type": "DOUBLE",
+        "nullable": false,
+        "null_count": 0,
+        "unique_count": 1200,
+        "sample_values": [1.5, 2.0, 3.7],
+        "min_value": 0.01,
+        "max_value": 9999.99
+      }
+    ],
+    "total_rows": 1000,
+    "total_columns": 8
+  },
+  "sample_data": [...],
+  "warnings": []
+}
+```
+
+Fallback app limit: 120 requests/minute (API Gateway quota is authoritative).
+
+---
+
+### Database Conversion
 
 #### `POST /test/database-connection`
-Test database connection before saving credentials.
 
-**Rate Limit:** 20 requests/minute
+Tests a database connection using temporary credentials (not stored).
 
 **Request:**
 ```json
@@ -126,422 +245,143 @@ Test database connection before saving credentials.
   "credentials": {
     "host": "db.example.com",
     "port": 5432,
-    "database": "production",
-    "username": "readonly",
-    "password": "temp_password",
-    "ssl_mode": "prefer"
+    "database": "mydb",
+    "username": "user",
+    "password": "pass"
   }
 }
 ```
 
-**Parameters:**
-- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
-- `credentials` (required):
-  - `host` (optional): Database hostname (not required for SQLite)
-  - `port` (optional): Database port (defaults: PostgreSQL/Redshift=5432, MySQL/MariaDB=3306, MSSQL=1433, Oracle=1521)
-  - `database` (optional): Database name (or file path for SQLite)
-  - `username` (optional): Database username (not required for SQLite)
-  - `password` (optional): Database password (not required for SQLite)
-  - `ssl_mode` (optional): `"require"`, `"prefer"`, or `"disable"` (default: `"prefer"`)
-  - `file_path` (optional): File path for SQLite databases (alternative to using `database` field)
-
-**SQLite Example:**
-```json
-{
-  "connector_type": "sqlite",
-  "credentials": {
-    "file_path": "/path/to/database.db"
-  }
-}
-```
-Or using `database` field:
-```json
-{
-  "connector_type": "sqlite",
-  "credentials": {
-    "database": "/path/to/database.db"
-  }
-}
-```
-
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "message": "Connection successful",
-  "metadata": {
-    "database_type": "PostgreSQL",
-    "rows_returned": 1
-  }
-}
-```
-
-**Error Response (400):**
-```json
-{
-  "success": false,
-  "error": "connection_failed",
-  "message": "connection refused: check host and port"
-}
-```
+Fallback app limit: 120 requests/minute (API Gateway quota is authoritative).
 
 ---
 
 #### `POST /convert/database`
-Extract database table or query results to Parquet.
 
-**Rate Limit:** 10 requests/minute
+Extracts a database table/query and writes Parquet to R2. Creates a new version and stores the extraction query.
 
 **Request:**
 ```json
 {
-  "output_url": "https://account.r2.cloudflarestorage.com/bucket/output.parquet?X-Amz-Signature=...",
-  "connector_type": "postgresql",
-  "credentials_id": "postgres_prod_readonly",
-  "query": "SELECT * FROM customers WHERE created_at > '2024-01-01'",
-  "partition_column": "id",
-  "partition_num": 8,
-  "compression": "snappy"
+  "source_id": "uuid",
+  "credentials_id": "secret-manager-id",
+  "query": "SELECT * FROM orders WHERE created_at > '2024-01-01'",
+  "compression": "zstd"
 }
 ```
 
-**Parameters:**
-- `output_url` (required): Signed PUT URL for Parquet output
-- `connector_type` (required): `"postgresql"`, `"mysql"`, `"sqlite"`, `"mssql"`, `"oracle"`, `"mariadb"`, or `"redshift"`
-- `credentials_id` (required): Secret Manager secret ID containing database credentials
-- `query` (optional): SQL query to execute
-- `table_name` (optional): Table name to extract (alternative to `query`, validated for SQL injection)
-- `partition_column` (optional): Column name for parallel extraction (not supported for SQLite)
-- `partition_num` (optional): Number of parallel partitions (1-16, default: 4, not supported for SQLite)
-- `compression` (optional): `"snappy"` (default, fastest), `"zstd"` (better compression), or `"none"`
+- `source_id` — UUID from Supabase (connector type is read from there)
+- `credentials_id` — Google Secret Manager ID containing connection credentials
+- `query` or `table_name` — one must be provided
+- `compression` — `zstd` (default), `snappy`, `none`
 
-**Notes:**
-- Must specify either `query` OR `table_name`, not both
-- SQLite does not support parallel partitioning - `partition_column` and `partition_num` will be ignored
-- MariaDB uses MySQL protocol internally
-- Redshift uses PostgreSQL protocol internally
-
-**Success Response (200):**
+**Response:**
 ```json
 {
   "success": true,
   "metadata": {
-    "rows": 1234567,
-    "columns": 15,
-    "file_size_mb": 45.2,
-    "processing_time_seconds": 12.5,
+    "version": 1,
+    "rows": 50000,
+    "columns": 6,
+    "column_schema": { "fields": [] },
+    "file_size_mb": 3.2,
+    "processing_time_seconds": 4.5,
     "source_type": "database",
     "connection_info": {
       "connector_type": "postgresql",
-      "query": "SELECT * FROM customers WHERE...",
-      "partitioned": true,
-      "compression": "snappy"
+      "query": "SELECT * FROM orders WHERE created_at > '2024-01-01'",
+      "compression": "zstd",
+      "engine": "duckdb"
     }
   }
 }
 ```
 
-**Error Responses:**
-- `400 Bad Request`: Invalid table name, missing required fields, or both query and table_name specified
-- `403 Forbidden`: Secret Manager permission denied
-- `404 Not Found`: Secret or table not found
-- `502 Bad Gateway`: Database unreachable, connection refused, or query timeout
-- `500 Internal Server Error`: Unexpected server error
+Fallback app limit: 60 requests/minute (API Gateway quota is authoritative).
 
 ---
 
-### Database Connector Details
+## Gateway-First Quotas and 429 Behavior
 
-#### PostgreSQL
-- **Default Port:** 5432
-- **Connection String:** `postgresql://user:pass@host:5432/database`
-- **Parallel Extraction:** ✅ Supported
-- **SSL Modes:** require, prefer, disable
+The API Gateway configuration in `openapi.yaml` is the **authoritative throttling layer**. Gateway enforces a shared `request_units` quota with per-operation costs:
 
-#### MySQL
-- **Default Port:** 3306
-- **Connection String:** `mysql://user:pass@host:3306/database`
-- **Parallel Extraction:** ✅ Supported
-- **SSL Modes:** require, prefer, disable
+- Lightweight endpoints (`/`, `/health`, `/info`) cost **1** unit
+- `GET /convert/{proxy}` costs **5** units
+- `POST /test/{proxy}` costs **6** units
+- `POST /infer/{proxy}` costs **8** units
+- `POST /convert/{proxy}` costs **10** units
 
-#### SQLite
-- **Default Port:** N/A (file-based)
-- **Connection String:** `sqlite:///path/to/file.db`
-- **Parallel Extraction:** ❌ Not supported
-- **Credentials:** Only requires `file_path` or `database` field (no host/username/password)
-- **Note:** Use absolute paths for reliability
+With a `600` units/minute quota, expensive operations consume quota faster than lightweight health/info calls.
 
-#### MS SQL Server
-- **Default Port:** 1433
-- **Connection String:** `mssql://user:pass@host:1433/database`
-- **Parallel Extraction:** ✅ Supported
-- **Also works for:** Azure SQL Database
+### 429 responses
 
-#### Oracle
-- **Default Port:** 1521
-- **Connection String:** `oracle://user:pass@host:1521/service_name`
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Uses `SELECT 1 FROM DUAL` for connection tests
-
-#### MariaDB
-- **Default Port:** 3306
-- **Connection String:** `mysql://user:pass@host:3306/database` (uses MySQL protocol)
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Internally uses MySQL connector
-
-#### Redshift
-- **Default Port:** 5439
-- **Connection String:** `postgresql://user:pass@host:5439/database` (uses PostgreSQL protocol)
-- **Parallel Extraction:** ✅ Supported
-- **Note:** Internally uses PostgreSQL connector
+- When gateway quota is exceeded, API Gateway returns **HTTP 429** before the request reaches FastAPI.
+- Backend SlowAPI limits remain enabled as a fallback guard if traffic bypasses gateway controls, and are intentionally more permissive.
+- Clients should treat 429 as retriable with backoff and retry after the quota window resets.
 
 ---
 
-### File Operations
+### Connectors
 
-#### `POST /convert/file`
-Convert file from various formats to Parquet.
-
-**Rate Limit:** 10 requests/minute
-
-**Request:**
+#### `GET /connectors`
 ```json
 {
-  "source_url": "https://account.r2.cloudflarestorage.com/bucket/source.csv?X-Amz-Signature=...",
-  "output_url": "https://account.r2.cloudflarestorage.com/bucket/output.parquet?X-Amz-Signature=...",
-  "format": "csv",
-  "options": {
-    "column_mapping": {
-      "old_name": "new_name"
-    },
-    "type_overrides": {
-      "column_name": "Int64"
-    },
-    "skip_rows": [0, 1],
-    "encoding": "utf-8",
-    "delimiter": ",",
-    "sheet_name": "Sheet1",
-    "sheet_index": 0
-  }
-}
-```
-
-**Parameters:**
-- `source_url` (required): Signed GET URL for source file
-- `output_url` (required): Signed PUT URL for Parquet output
-- `format` (required): `"csv"`, `"tsv"`, `"excel"`, `"json"`, or `"parquet"`
-- `options` (optional):
-  - `column_mapping` (optional): Rename columns `{"old_name": "new_name"}`
-  - `type_overrides` (optional): Override column types `{"column": "Int64"}` (Polars types)
-  - `skip_rows` (optional): Row indices to skip `[0, 1, 5]`
-  - `encoding` (optional): Force encoding (default: auto-detect)
-  - `delimiter` (optional): Force delimiter for CSV (default: auto-detect)
-  - `sheet_name` (optional): Excel sheet name to convert
-  - `sheet_index` (optional): Excel sheet index (0-based)
-
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "metadata": {
-    "rows": 50000,
-    "columns": 12,
-    "file_size_mb": 8.5,
-    "processing_time_seconds": 3.2,
-    "source_type": "file",
-    "rows_skipped": 2,
-    "warnings": ["Column 'price' had 5 null values"]
-  }
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: Invalid format, missing required fields, or malformed file
-- `502 Bad Gateway`: Source file unreachable or storage upload failed
-- `500 Internal Server Error`: Conversion failed or unexpected error
-
----
-
-#### `POST /infer/schema`
-Infer schema from file without converting (useful for validation).
-
-**Rate Limit:** 20 requests/minute
-
-**Request:**
-```json
-{
-  "source_url": "https://account.r2.cloudflarestorage.com/bucket/data.csv?X-Amz-Signature=...",
-  "format": "csv",
-  "sample_size": 1000
-}
-```
-
-**Parameters:**
-- `source_url` (required): Signed GET URL for source file
-- `format` (required): `"csv"`, `"tsv"`, `"excel"`, `"json"`, or `"parquet"`
-- `sample_size` (optional): Number of rows to analyze (1-10000, default: 1000)
-
-**Success Response (200):**
-```json
-{
-  "success": true,
-  "schema": {
-    "columns": [
-      {
-        "name": "customer_id",
-        "inferred_type": "Int64",
-        "nullable": false,
-        "null_count": 0,
-        "unique_count": 1000,
-        "sample_values": [1, 2, 3, 4, 5],
-        "min_value": 1,
-        "max_value": 1000
-      },
-      {
-        "name": "email",
-        "inferred_type": "Utf8",
-        "detected_format": "email",
-        "nullable": true,
-        "null_count": 5,
-        "unique_count": 995,
-        "sample_values": ["user@example.com", "test@test.com"]
-      }
-    ],
-    "total_rows": 1000,
-    "total_columns": 2,
-    "file_size_bytes": 45000
-  },
-  "sample_data": [
-    {"customer_id": 1, "email": "user@example.com"},
-    {"customer_id": 2, "email": "test@test.com"}
-  ],
-  "warnings": [
-    {
-      "column": "email",
-      "issue": "null_values",
-      "message": "Column has 5 null values",
-      "affected_rows": [10, 25, 30, 45, 67]
-    }
-  ]
-}
-```
-
-**Error Responses:**
-- `400 Bad Request`: Invalid format or sample_size
-- `502 Bad Gateway`: Source file unreachable
-- `500 Internal Server Error`: Schema inference failed
-
----
-
-## Error Handling
-
-All endpoints return consistent error responses:
-
-```json
-{
-  "detail": "Error message describing what went wrong"
-}
-```
-
-### HTTP Status Codes
-- `200 OK`: Request succeeded
-- `400 Bad Request`: Invalid input (malformed request, invalid table name, missing required fields)
-- `403 Forbidden`: Permission denied (Secret Manager access)
-- `404 Not Found`: Resource not found (secret, table, file)
-- `429 Too Many Requests`: Rate limit exceeded
-- `502 Bad Gateway`: Upstream service error (database unreachable, storage unavailable)
-- `500 Internal Server Error`: Unexpected server error
-
-### Common Error Examples
-
-**Invalid table name (SQL injection attempt):**
-```json
-{
-  "detail": "Invalid table name: 'users; DROP TABLE users'. Table names must contain only alphanumeric characters, underscores, and dots."
-}
-```
-
-**Secret not found:**
-```json
-{
-  "detail": "Secret not found: postgres_prod_readonly"
-}
-```
-
-**Database unreachable:**
-```json
-{
-  "detail": "Database connection failed: connection refused"
+  "connectors": ["postgresql", "mysql", "sqlite", "mariadb", "redshift"],
+  "count": 5
 }
 ```
 
 ---
 
-## Performance Tips
+## Supported File Formats
 
-### Database Extraction
-1. **Use partitioning** for tables with >100K rows to enable parallel extraction
-2. **Specify partition_column** with an indexed column for best performance
-3. **Choose appropriate partition_num** (1-16): 4-8 partitions work well for most datasets
-4. **Use column subsets** in queries instead of `SELECT *` to reduce transfer size
-5. **Use snappy compression** for balanced performance (default)
+| Format | DuckDB function |
+|--------|-----------------|
+| CSV | `read_csv()` |
+| TSV | `read_csv(sep='\t')` |
+| JSON / GeoJSON | `read_json()` |
+| Excel (xlsx) | `read_xlsx()` (excel extension) |
+| Parquet | `read_parquet()` |
 
-### Compression Options
-| Compression | Speed | Ratio | Best For |
-|------------|-------|-------|----------|
-| `snappy` (default) | Fastest | 2-4x | General use, real-time processing |
-| `zstd` | Slower | 4-8x | Archival, cold storage |
-| `none` | Fastest write | 1x | Immediate downstream processing |
+## Supported Database Connectors
 
-### Example: Parallel Extraction
-```json
-{
-  "table_name": "large_orders_table",
-  "partition_column": "order_id",
-  "partition_num": 8,
-  "compression": "snappy"
-}
+| Connector | Default engine | ADBC alternative |
+|-----------|---------------|-----------------|
+| PostgreSQL | `postgres` extension (`ATTACH … TYPE postgres`) | ✓ `adbc-driver-postgresql` |
+| MySQL / MariaDB | `mysql` extension (`ATTACH … TYPE mysql`) | — |
+| SQLite | Built-in (`ATTACH … TYPE sqlite`) | — |
+| Redshift | PostgreSQL-compatible connector | ✓ `adbc-driver-postgresql` |
+
+---
+
+## ADBC Support
+
+For PostgreSQL and Redshift extractions, Tundra **always prefers ADBC** (Arrow Database Connectivity) for better performance on large result sets.
+
+Requires `adbc-driver-postgresql>=1.1.0` (included in `requirements.txt`).
+
+**How it works:** ADBC uses PostgreSQL's native COPY protocol to stream data directly as Arrow columnar format, bypassing row-by-row serialisation. Tundra then hands the in-memory Arrow table to DuckDB for Parquet/R2 writing, so direct R2 writes are fully preserved.
+
+**Performance benefit:** Typically 5–10× faster for >100 k-row extractions compared to the DuckDB postgres scanner, with lower peak memory usage due to zero-copy Arrow transfer.
+
+**Fallback behaviour:** If `adbc_driver_postgresql` is not installed, Tundra logs a warning and falls back to the DuckDB postgres scanner automatically — no downtime.
+
+---
+
+## Cloud Run Configuration
+
+Recommended Cloud Run settings:
+
+```yaml
+resources:
+  limits:
+    memory: 8Gi
+    cpu: "2"
+env:
+  DUCKDB_MEMORY_LIMIT: "6GB"
+  DUCKDB_THREADS: "2"
+  DUCKDB_TEMP_DIR: "/tmp/duckdb_swap"
+  DUCKDB_MAX_TEMP_DIR_SIZE: "1GB"
 ```
-This splits the table into 8 chunks based on `order_id` ranges and extracts them in parallel, typically 4-8x faster than single-threaded extraction.
 
----
-
-## Security
-
-### SQL Injection Protection
-- Table names are validated against pattern: `^[a-zA-Z0-9_\.]+$`
-- Queries are parameterized when using `query` parameter
-- Use `table_name` for simple table extraction when possible
-
-### URL Validation
-- Only signed URLs from approved domains are accepted
-- Prevents abuse where malicious users provide URLs to unauthorized storage
-
-### Credential Management
-- Never send credentials in API calls (except for connection testing)
-- Store credentials in Google Secret Manager
-- Reference credentials by ID in conversion requests
-- Credentials are cached for 1 hour to reduce Secret Manager API calls
-
----
-
-## Limits & Quotas
-
-| Resource | Default Limit | Configurable |
-|----------|---------------|--------------|
-| Max file size | 500 MB | Yes (env var) |
-| Max processing time | 10 minutes | Yes (Cloud Run) |
-| Max memory | 2 GB | Yes (Cloud Run) |
-| Max rows processed | 10 million | Yes (env var) |
-| Max partitions | 16 | Yes (in code) |
-| Rate limit: health | None | No |
-| Rate limit: conversions | 10/min | Yes (in code) |
-| Rate limit: tests | 20/min | Yes (in code) |
-
----
-
-## Support
-
-For issues or questions, contact the Halatio development team.
-
-**License:** Proprietary - Halatio Analytics Platform
+DuckDB memory is configured via `duckdb.connect(config=…)` at connection time, which correctly reads cgroup limits in containerised environments.

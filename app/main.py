@@ -1,172 +1,350 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import duckdb
 import logging
+import os
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+import anyio
+
 from .config import settings
 from .models.conversionRequest import (
     FileConversionRequest,
-    ConversionResponse, HealthResponse,
-    SchemaInferRequest, SchemaInferResponse,
-    ConnectionTestRequest, ConnectionTestResponse,
-    DatabaseConversionRequest, ConversionMetadata
+    ConversionResponse,
+    HealthResponse,
+    SchemaInferRequest,
+    SchemaInferResponse,
+    ConnectionTestRequest,
+    ConnectionTestResponse,
+    DatabaseConversionRequest,
+    ConversionMetadata,
 )
 from .services.file_converter import FileConverter
 from .services.schema_inference import SchemaInferenceService
 from .services.secret_manager import get_secret_manager
+from .services.supabase_client import (
+    get_source,
+    create_source_version,
+    update_source_version,
+    update_source_current_version,
+    update_source_extraction_query,
+)
 from .services.connectors.factory import ConnectorFactory
-from .utils import validate_signed_url, raise_http_exception, ValidationError, DatabaseError, StorageError
-import tempfile
-import os
-import httpx
+from .services.connectors.duckdb_base import _make_duckdb_config
+from .services.resilience import CircuitBreakerOpenError
+from .utils import raise_http_exception, ValidationError, DatabaseError
 
-# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Setup rate limiter
 limiter = Limiter(key_func=get_remote_address)
+
+# API Gateway quotas in openapi.yaml are the authoritative throttling layer.
+# SlowAPI limits below are intentionally permissive and act only as in-process
+# fallback protection if requests bypass the gateway.
+FALLBACK_LIMIT_CONVERT = "60/minute"
+FALLBACK_LIMIT_INFER = "120/minute"
+FALLBACK_LIMIT_TEST = "120/minute"
+
+
+def _r2_bucket(org_id: str) -> str:
+    """Return the R2 bucket name for an organisation."""
+    return f"org-{org_id}"
+
+
+def _source_path(org_id: str, source_id: str) -> str:
+    """R2 path for the uploaded source file directory (no filename)."""
+    return f"r2://{_r2_bucket(org_id)}/uploads/{source_id}"
+
+
+def _output_path(org_id: str, source_id: str, version: int) -> str:
+    """R2 path for the processed Parquet file."""
+    return f"r2://{_r2_bucket(org_id)}/processed/{source_id}/v{version}/data.parquet"
+
+
+def _raw_path(org_id: str, source_id: str, version: int, ext: str) -> str:
+    """R2 path for the archived raw file."""
+    return f"r2://{_r2_bucket(org_id)}/raw/{source_id}/v{version}/data.{ext}"
+
+
+def _setup_r2_persistent_secret() -> None:
+    """
+    Create a persistent DuckDB R2 secret written to /tmp/.duckdb/stored_secrets/.
+
+    This runs once at startup.  All subsequent DuckDB connections created with
+    home_directory='/tmp' will automatically load this secret, enabling direct
+    R2 reads and writes without per-connection configuration.
+    """
+    key_id = settings.R2_ACCESS_KEY_ID
+    secret_key = settings.R2_SECRET_ACCESS_KEY
+    if not key_id or not secret_key:
+        raise ValueError(
+            "R2 credentials are not configured. Set mounted secrets, Secret Manager "
+            "references, or local env fallback values."
+        )
+
+    safe_key_id = key_id.replace("'", "''")
+    safe_secret_key = secret_key.replace("'", "''")
+
+    os.makedirs("/tmp/.duckdb/stored_secrets", exist_ok=True)
+    conn = duckdb.connect(":memory:", config=_make_duckdb_config())
+    try:
+        conn.execute("SET autoinstall_known_extensions = false")
+        conn.execute("SET autoload_known_extensions = true")
+        conn.execute(f"""
+            CREATE OR REPLACE PERSISTENT SECRET r2_tundra (
+                TYPE r2,
+                KEY_ID '{safe_key_id}',
+                SECRET '{safe_secret_key}',
+                ACCOUNT_ID '{settings.CLOUDFLARE_ACCOUNT_ID}'
+            )
+        """)
+        logger.info("DuckDB R2 persistent secret created")
+    finally:
+        conn.close()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("🚀 Starting Halatio Tundra Data Conversion Service")
+    logger.info("Starting Halatio Tundra Data Conversion Service")
+    await anyio.to_thread.run_sync(_setup_r2_persistent_secret)
     yield
-    # Shutdown
-    logger.info("🛑 Halatio Tundra shutdown complete")
+    logger.info("Halatio Tundra shutdown complete")
 
-# Create FastAPI app
+
 app = FastAPI(
     title="Halatio Tundra",
-    description="Production-grade data integration platform - Files, Databases, and APIs to Parquet (v3.0 with native database connectors)",
-    version="3.0.0",
-    lifespan=lifespan
+    description="Data conversion service — Files and Databases to Parquet via DuckDB",
+    version="4.0.0",
+    lifespan=lifespan,
 )
 
-# Add rate limiter state and exception handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
-    allow_credentials=False,  # No credentials needed for conversion service
+    allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Health & info
+# ---------------------------------------------------------------------------
 
 @app.get("/", response_model=HealthResponse)
 async def root():
-    """Root endpoint"""
-    return HealthResponse(
-        status="running",
-        service="halatio-tundra",
-        version="3.0.0"
-    )
+    return HealthResponse(status="running", service="halatio-tundra", version="4.0.0")
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Basic health check endpoint"""
-    return HealthResponse(
-        status="healthy",
-        service="halatio-tundra",
-        version="3.0.0"
-    )
+    return HealthResponse(status="healthy", service="halatio-tundra", version="4.0.0")
+
 
 @app.get("/health/deep")
 async def deep_health_check():
-    """Deep health check including Secret Manager connectivity"""
     health_status = {
         "status": "healthy",
         "service": "halatio-tundra",
-        "version": "3.0.0",
-        "checks": {}
+        "version": "4.0.0",
+        "checks": {},
     }
 
-    # Check Secret Manager connectivity
     try:
         secret_manager = get_secret_manager()
-        # Try to list secrets to verify permissions
         secret_manager.client.list_secrets(
             request={"parent": f"projects/{secret_manager.project_id}"}
         )
         health_status["checks"]["secret_manager"] = "healthy"
     except Exception as e:
-        health_status["checks"]["secret_manager"] = f"unhealthy: {str(e)}"
+        health_status["checks"]["secret_manager"] = f"unhealthy: {e}"
+        health_status["status"] = "degraded"
+
+    try:
+        from .services.supabase_client import get_supabase_client
+        sb = get_supabase_client()
+        # Lightweight probe: list 1 row from sources table
+        sb.table("sources").select("id").limit(1).execute()
+        health_status["checks"]["supabase"] = "healthy"
+    except Exception as e:
+        health_status["checks"]["supabase"] = f"unhealthy: {e}"
         health_status["status"] = "degraded"
 
     return health_status
 
+
+@app.get("/info")
+async def service_info():
+    return {
+        "service": "halatio-tundra",
+        "version": "4.0.0",
+        "capabilities": {
+            "file_formats": ["csv", "tsv", "json", "geojson", "excel", "parquet"],
+            "output_format": "parquet",
+            "max_file_size_mb": 500,
+            "supported_sources": ["file", "database"],
+            "database_connectors": ConnectorFactory.list_connectors(),
+            "query_engine": "duckdb",
+            "direct_r2_write": True,
+        },
+        "limits": {
+            "max_processing_time_minutes": 10,
+            "max_memory_usage_gb": 6,
+            "max_rows_processed": "unlimited (memory-bound)",
+        },
+        "features": {
+            "duckdb_engine": True,
+            "direct_r2_read_write": True,
+            "automatic_schema_inference": True,
+            "optimized_parquet_output": True,
+            "excel_support": True,
+            "column_transformations": True,
+            "database_connectors": True,
+            "secret_manager_integration": True,
+            "supabase_integration": True,
+            "configurable_memory_limits": True,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Conversion endpoints
+# ---------------------------------------------------------------------------
+
 @app.post("/convert/file", response_model=ConversionResponse)
-@limiter.limit("10/minute")
+@limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_file(request: Request, body: FileConversionRequest):
-    """Convert file from R2 source to parquet format"""
-    if body.format is None:
-        raise HTTPException(status_code=400, detail="`format` must be specified for file conversions.")
-    logger.info(f"📄 Converting file: {body.format} → parquet")
+    """Convert a file source to Parquet directly in R2."""
+    logger.info(f"File conversion requested: source_id={body.source_id}")
 
+    source_version = None
     try:
-        # Convert options to dict if present
-        options = body.options.dict() if body.options else {}
+        source = await get_source(body.source_id)
 
+        org_id = source["organization_id"]
+        file_format = (body.format.value if body.format else source["connector_type"])
+        next_version = source["current_version"] + 1
+
+        # Create pending source_version record
+        source_version = await create_source_version(
+            source_id=body.source_id,
+            version=next_version,
+            status="pending",
+        )
+
+        src = _source_path(org_id, body.source_id)
+        out = _output_path(org_id, body.source_id, next_version)
+
+        logger.info(f"Converting {file_format} -> {out}")
+
+        options = body.options.dict() if body.options else {}
         result = await FileConverter.convert(
-            source_url=str(body.source_url),
-            output_url=str(body.output_url),
-            file_format=body.format,
-            options=options
+            source_path=src,
+            output_path=out,
+            file_format=file_format,
+            options=options,
+            version=next_version,
         )
 
         if not result["success"]:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=result.get("error"),
+            )
             raise HTTPException(status_code=500, detail=result["error"])
 
-        logger.info(f"✅ File conversion complete: {result['metadata']['rows']} rows")
-        return ConversionResponse(**result)
+        meta = result["metadata"]
 
-    except Exception as e:
-        logger.error(f"❌ File conversion failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
-
-@app.post("/infer/schema", response_model=SchemaInferResponse)
-@limiter.limit("20/minute")
-async def infer_schema(request: Request, body: SchemaInferRequest):
-    """Infer schema from file for backend verification"""
-    logger.info(f"🔍 Inferring schema: {body.format}")
-
-    try:
-        result = await SchemaInferenceService.infer_schema(
-            source_url=str(body.source_url),
-            file_format=body.format,
-            sample_size=body.sample_size
+        # Update source_version with success metrics
+        await update_source_version(
+            version_id=source_version["id"],
+            status="active",
+            row_count=meta["rows"],
+            column_count=meta["columns"],
+            file_size_bytes=int(meta["file_size_mb"] * 1024 * 1024) or None,
+            processing_time_seconds=meta["processing_time_seconds"],
         )
 
-        logger.info(f"✅ Schema inference complete: {result['schema_info']['total_columns']} columns")
+        # Increment sources.current_version
+        await update_source_current_version(body.source_id, next_version)
+
+        logger.info(f"File conversion complete: {meta['rows']} rows, v{next_version}")
+        return ConversionResponse(**result)
+
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"File conversion failed: {e}")
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
+
+
+@app.post("/infer/schema", response_model=SchemaInferResponse)
+@limiter.limit(FALLBACK_LIMIT_INFER)
+async def infer_schema(request: Request, body: SchemaInferRequest):
+    """Infer schema from a file source directly in R2."""
+    logger.info(f"Schema inference requested: source_id={body.source_id}")
+
+    try:
+        source = await get_source(body.source_id)
+
+        org_id = source["organization_id"]
+        file_format = (body.format.value if body.format else source["connector_type"])
+
+        src = _source_path(org_id, body.source_id)
+
+        result = await anyio.to_thread.run_sync(
+            SchemaInferenceService.infer_schema,
+            src,
+            file_format,
+            body.sample_size,
+        )
+
+        logger.info(f"Schema inference complete: {result['schema_info']['total_columns']} columns")
         return SchemaInferResponse(**result)
 
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"❌ Schema inference failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Schema inference failed: {str(e)}")
+        logger.error(f"Schema inference failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Schema inference failed: {e}")
+
 
 @app.post("/test/database-connection", response_model=ConnectionTestResponse)
-@limiter.limit("20/minute")
+@limiter.limit(FALLBACK_LIMIT_TEST)
 async def test_database_connection(request: Request, body: ConnectionTestRequest):
-    """Test database connection before saving credentials"""
+    """Test a database connection before saving credentials."""
     logger.info(f"Testing {body.connector_type} connection")
 
     try:
-        # Create connector instance
         connector = ConnectorFactory.create_connector(
             connector_type=body.connector_type,
-            credentials=body.credentials.dict()
+            credentials=body.credentials.dict(),
         )
-
-        # Test connection
         result = await connector.test_connection()
 
         if result["success"]:
-            logger.info(f"Connection test successful: {body.connector_type}")
+            logger.info(f"Connection test succeeded: {body.connector_type}")
         else:
             logger.warning(f"Connection test failed: {result.get('error')}")
 
@@ -175,64 +353,73 @@ async def test_database_connection(request: Request, body: ConnectionTestRequest
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Connection test failed: {str(e)}")
+        logger.error(f"Connection test error: {e}")
         raise_http_exception(e)
 
+
 @app.post("/convert/database", response_model=ConversionResponse)
-@limiter.limit("10/minute")
+@limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_database_data(request: Request, body: DatabaseConversionRequest):
-    """Extract database data and convert to Parquet"""
-    logger.info(f"Converting {body.connector_type} data")
+    """Extract database data and write Parquet directly to R2."""
+    logger.info(f"Database conversion requested: source_id={body.source_id}")
 
-    temp_path = None
-
+    source_version = None
     try:
-        # Validate signed URL
-        validate_signed_url(str(body.output_url))
+        source = await get_source(body.source_id)
 
-        # Get credentials from Secret Manager
+        org_id = source["organization_id"]
+        connector_type = source["connector_type"]
+        next_version = source["current_version"] + 1
+
+        # Create pending source_version record
+        source_version = await create_source_version(
+            source_id=body.source_id,
+            version=next_version,
+            status="pending",
+        )
+
+        out = _output_path(org_id, body.source_id, next_version)
+
+        # Retrieve credentials from Secret Manager
         secret_manager = get_secret_manager()
         credentials = secret_manager.get_credentials(body.credentials_id)
 
-        # Create connector
         connector = ConnectorFactory.create_connector(
-            connector_type=body.connector_type,
-            credentials=credentials
+            connector_type=connector_type,
+            credentials=credentials,
         )
 
-        # Create temporary file for parquet output
-        with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp_file:
-            temp_path = tmp_file.name
-
-        # Extract to parquet
         metadata = await connector.extract_to_parquet(
-            output_path=temp_path,
+            output_path=out,
             query=body.query,
             table_name=body.table_name,
-            partition_column=body.partition_column,
-            partition_num=body.partition_num,
-            compression=body.compression
+            compression=body.compression.value,
         )
 
-        # Upload to R2
-        try:
-            async with httpx.AsyncClient(timeout=300) as client:
-                with open(temp_path, "rb") as f:
-                    parquet_data = f.read()
+        # Store extraction query if provided
+        query_used = body.query or metadata.get("query", "")
+        if query_used:
+            await update_source_extraction_query(body.source_id, query_used)
 
-                response = await client.put(
-                    str(body.output_url),
-                    content=parquet_data,
-                    headers={"Content-Type": "application/x-parquet"}
-                )
-                response.raise_for_status()
-        except httpx.HTTPError as e:
-            raise StorageError(f"Failed to upload to storage: {str(e)}")
+        # Update source_version with success metrics
+        await update_source_version(
+            version_id=source_version["id"],
+            status="active",
+            row_count=metadata["rows"],
+            column_count=metadata["columns"],
+            file_size_bytes=int(metadata["file_size_mb"] * 1024 * 1024) or None,
+            processing_time_seconds=metadata["processing_time_seconds"],
+        )
 
-        logger.info(f"Database conversion complete: {metadata['rows']} rows")
+        # Increment sources.current_version
+        await update_source_current_version(body.source_id, next_version)
 
-        # Build response
+        logger.info(
+            f"Database conversion complete: {metadata['rows']} rows -> {out}"
+        )
+
         conversion_metadata = ConversionMetadata(
+            version=next_version,
             rows=metadata["rows"],
             columns=metadata["columns"],
             column_schema={"fields": []},
@@ -240,68 +427,48 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
             processing_time_seconds=metadata["processing_time_seconds"],
             source_type="database",
             connection_info={
-                "connector_type": body.connector_type,
+                "connector_type": connector_type,
                 "query": metadata.get("query", ""),
-                "partitioned": metadata.get("partitioned", False),
-                "compression": body.compression
-            }
+                "compression": body.compression.value,
+                "engine": "duckdb",
+            },
         )
 
-        return ConversionResponse(
-            success=True,
-            metadata=conversion_metadata
-        )
+        return ConversionResponse(success=True, metadata=conversion_metadata)
 
     except (ValidationError, ValueError) as e:
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
         raise HTTPException(status_code=400, detail=str(e))
+    except CircuitBreakerOpenError as e:
+        logger.warning("Fast-fail due to open circuit breaker: %s", e)
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Database conversion failed: {str(e)}")
+        logger.error(f"Database conversion failed: {e}")
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
         raise_http_exception(e)
-    finally:
-        # Clean up temp file
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.unlink(temp_path)
-            except Exception as cleanup_error:
-                logger.warning(f"Failed to clean up temp file: {cleanup_error}")
+
+
+# ---------------------------------------------------------------------------
+# Connector listing
+# ---------------------------------------------------------------------------
 
 @app.get("/connectors")
 async def list_available_connectors():
-    """List all available connector types"""
-    return {
-        "connectors": ConnectorFactory.list_connectors(),
-        "count": len(ConnectorFactory.list_connectors())
-    }
-
-@app.get("/info")
-async def service_info():
-    """Get service capabilities and limits"""
-    return {
-        "service": "halatio-tundra",
-        "version": "3.0.0",
-        "capabilities": {
-            "file_formats": ["csv", "tsv", "excel", "json", "parquet"],
-            "output_format": "parquet",
-            "max_file_size_mb": 500,
-            "supported_sources": ["file", "database"],
-            "database_connectors": ConnectorFactory.list_connectors()
-        },
-        "limits": {
-            "max_processing_time_minutes": 10,
-            "max_memory_usage_gb": 2,
-            "max_rows_processed": 10_000_000
-        },
-        "features": {
-            "polars_native": True,
-            "streaming_processing": True,
-            "automatic_schema_inference": True,
-            "optimized_parquet_output": True,
-            "excel_support": True,
-            "column_transformations": True,
-            "schema_inference": True,
-            "sql_connection_testing": True,
-            "database_connectors": True,
-            "secret_manager_integration": True,
-            "parallel_extraction": True
-        }
-    }
+    connectors = ConnectorFactory.list_connectors()
+    return {"connectors": connectors, "count": len(connectors)}

@@ -3,8 +3,13 @@ fastapi
 uvicorn[standard]
 
 # Data processing
-polars[excel]
 pyarrow
+duckdb>=1.4.0
+
+# ADBC (Arrow Database Connectivity) — preferred PostgreSQL connector
+# Provides zero-copy Arrow transfer; requires adbc_driver_postgresql >= 1.1.0
+adbc-driver-manager>=1.1.0
+adbc-driver-postgresql>=1.1.0
 
 # Data validation and configuration
 pydantic
@@ -16,18 +21,15 @@ python-multipart
 # HTTP client
 httpx
 
+# Supabase
+supabase>=2.0.0
+
 # Environment and security
 python-dotenv
 python-jose[cryptography]
 
 # Rate limiting
 slowapi
-
-# Database connectors
-connectorx>=0.3.2
-sqlalchemy>=2.0.0
-asyncpg>=0.29.0
-pymysql>=1.1.0
 
 # Retry logic
 tenacity>=8.2.3
