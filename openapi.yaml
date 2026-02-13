@@ -105,7 +105,6 @@ paths:
         Convert data from various sources to Parquet format.
         Supported endpoints:
         - /convert/file - Convert files (CSV, TSV, Excel, JSON, Parquet)
-        - /convert/sql - Execute SQL query and convert results
         - /convert/database - Extract from database using native connectors
       parameters:
         - name: proxy
@@ -138,7 +137,6 @@ paths:
         Test connections before saving credentials.
         Supported endpoints:
         - /test/database-connection - Test native database connectors
-        - /test/sql-connection - Test SQL API connections
       parameters:
         - name: proxy
           in: path

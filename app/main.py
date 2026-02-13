@@ -24,7 +24,13 @@ from .models.conversionRequest import (
 from .services.file_converter import FileConverter
 from .services.schema_inference import SchemaInferenceService
 from .services.secret_manager import get_secret_manager
-from .services.supabase_client import get_source, update_source
+from .services.supabase_client import (
+    get_source,
+    create_source_version,
+    update_source_version,
+    update_source_current_version,
+    update_source_extraction_query,
+)
 from .services.connectors.factory import ConnectorFactory
 from .services.connectors.duckdb_base import _make_duckdb_config
 from .utils import raise_http_exception, ValidationError, DatabaseError
@@ -37,17 +43,22 @@ limiter = Limiter(key_func=get_remote_address)
 
 def _r2_bucket(org_id: str) -> str:
     """Return the R2 bucket name for an organisation."""
-    return f"{settings.R2_BUCKET_PREFIX}-{org_id}"
+    return f"org-{org_id}"
 
 
 def _source_path(org_id: str, source_id: str) -> str:
-    """R2 path for the raw source file (no extension — format comes from DB)."""
+    """R2 path for the uploaded source file directory (no filename)."""
     return f"r2://{_r2_bucket(org_id)}/uploads/{source_id}"
 
 
-def _output_path(org_id: str, source_id: str) -> str:
+def _output_path(org_id: str, source_id: str, version: int) -> str:
     """R2 path for the processed Parquet file."""
-    return f"r2://{_r2_bucket(org_id)}/processed/{source_id}.parquet"
+    return f"r2://{_r2_bucket(org_id)}/processed/{source_id}/v{version}/data.parquet"
+
+
+def _raw_path(org_id: str, source_id: str, version: int, ext: str) -> str:
+    """R2 path for the archived raw file."""
+    return f"r2://{_r2_bucket(org_id)}/raw/{source_id}/v{version}/data.{ext}"
 
 
 def _setup_r2_persistent_secret() -> None:
@@ -193,14 +204,23 @@ async def convert_file(request: Request, body: FileConversionRequest):
     """Convert a file source to Parquet directly in R2."""
     logger.info(f"File conversion requested: source_id={body.source_id}")
 
+    source_version = None
     try:
         source = await get_source(body.source_id)
 
         org_id = source["organization_id"]
         file_format = (body.format.value if body.format else source["connector_type"])
+        next_version = source["current_version"] + 1
+
+        # Create pending source_version record
+        source_version = await create_source_version(
+            source_id=body.source_id,
+            version=next_version,
+            status="pending",
+        )
 
         src = _source_path(org_id, body.source_id)
-        out = _output_path(org_id, body.source_id)
+        out = _output_path(org_id, body.source_id, next_version)
 
         logger.info(f"Converting {file_format} -> {out}")
 
@@ -210,21 +230,33 @@ async def convert_file(request: Request, body: FileConversionRequest):
             output_path=out,
             file_format=file_format,
             options=options,
+            version=next_version,
         )
 
         if not result["success"]:
-            await update_source(body.source_id, status="error")
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=result.get("error"),
+            )
             raise HTTPException(status_code=500, detail=result["error"])
 
         meta = result["metadata"]
-        await update_source(
-            body.source_id,
+
+        # Update source_version with success metrics
+        await update_source_version(
+            version_id=source_version["id"],
             status="active",
             row_count=meta["rows"],
+            column_count=meta["columns"],
             file_size_bytes=int(meta["file_size_mb"] * 1024 * 1024) or None,
+            processing_time_seconds=meta["processing_time_seconds"],
         )
 
-        logger.info(f"File conversion complete: {meta['rows']} rows")
+        # Increment sources.current_version
+        await update_source_current_version(body.source_id, next_version)
+
+        logger.info(f"File conversion complete: {meta['rows']} rows, v{next_version}")
         return ConversionResponse(**result)
 
     except ValueError as e:
@@ -233,6 +265,12 @@ async def convert_file(request: Request, body: FileConversionRequest):
         raise
     except Exception as e:
         logger.error(f"File conversion failed: {e}")
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
         raise HTTPException(status_code=500, detail=f"Conversion failed: {e}")
 
 
@@ -300,12 +338,22 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
     """Extract database data and write Parquet directly to R2."""
     logger.info(f"Database conversion requested: source_id={body.source_id}")
 
+    source_version = None
     try:
         source = await get_source(body.source_id)
 
         org_id = source["organization_id"]
         connector_type = source["connector_type"]
-        out = _output_path(org_id, body.source_id)
+        next_version = source["current_version"] + 1
+
+        # Create pending source_version record
+        source_version = await create_source_version(
+            source_id=body.source_id,
+            version=next_version,
+            status="pending",
+        )
+
+        out = _output_path(org_id, body.source_id, next_version)
 
         # Retrieve credentials from Secret Manager
         secret_manager = get_secret_manager()
@@ -323,16 +371,30 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
             compression=body.compression.value,
         )
 
-        await update_source(
-            body.source_id,
+        # Store extraction query if provided
+        query_used = body.query or metadata.get("query", "")
+        if query_used:
+            await update_source_extraction_query(body.source_id, query_used)
+
+        # Update source_version with success metrics
+        await update_source_version(
+            version_id=source_version["id"],
             status="active",
             row_count=metadata["rows"],
+            column_count=metadata["columns"],
             file_size_bytes=int(metadata["file_size_mb"] * 1024 * 1024) or None,
+            processing_time_seconds=metadata["processing_time_seconds"],
         )
 
-        logger.info(f"Database conversion complete: {metadata['rows']} rows -> {out}")
+        # Increment sources.current_version
+        await update_source_current_version(body.source_id, next_version)
+
+        logger.info(
+            f"Database conversion complete: {metadata['rows']} rows -> {out}"
+        )
 
         conversion_metadata = ConversionMetadata(
+            version=next_version,
             rows=metadata["rows"],
             columns=metadata["columns"],
             column_schema={"fields": []},
@@ -350,11 +412,21 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
         return ConversionResponse(success=True, metadata=conversion_metadata)
 
     except (ValidationError, ValueError) as e:
-        await update_source(body.source_id, status="error")
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Database conversion failed: {e}")
-        await update_source(body.source_id, status="error")
+        if source_version:
+            await update_source_version(
+                version_id=source_version["id"],
+                status="error",
+                error_message=str(e),
+            )
         raise_http_exception(e)
 
 

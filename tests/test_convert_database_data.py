@@ -45,6 +45,18 @@ if "supabase" not in sys.modules:
         ClientOptions=_DummyClientOptions,
     )
 
+# Stub google.cloud.secretmanager if not installed
+if "google" not in sys.modules:
+    _google = types.ModuleType("google")
+    _google_cloud = types.ModuleType("google.cloud")
+    _google_cloud_sm = types.ModuleType("google.cloud.secretmanager")
+    _google_cloud_sm.SecretManagerServiceClient = type("SecretManagerServiceClient", (), {"__init__": lambda self: None})
+    _google.cloud = _google_cloud
+    _google_cloud.secretmanager = _google_cloud_sm
+    sys.modules["google"] = _google
+    sys.modules["google.cloud"] = _google_cloud
+    sys.modules["google.cloud.secretmanager"] = _google_cloud_sm
+
 
 from app import main as main_module
 
@@ -64,7 +76,9 @@ class _Connector:
 
 @pytest.mark.anyio
 async def test_convert_database_data_sets_active_status_on_success(monkeypatch):
-    calls = []
+    version_calls = []
+    current_version_calls = []
+    extraction_query_calls = []
 
     async def fake_get_source(source_id):
         return {
@@ -72,10 +86,20 @@ async def test_convert_database_data_sets_active_status_on_success(monkeypatch):
             "organization_id": "org-1",
             "connector_type": "postgresql",
             "source_type": "database",
+            "current_version": 0,
         }
 
-    async def fake_update_source(source_id, **kwargs):
-        calls.append((source_id, kwargs))
+    async def fake_create_source_version(source_id, version, status="pending"):
+        return {"id": "sv-1", "source_id": source_id, "version": version, "status": status}
+
+    async def fake_update_source_version(version_id, status, **kwargs):
+        version_calls.append((version_id, status, kwargs))
+
+    async def fake_update_source_current_version(source_id, version):
+        current_version_calls.append((source_id, version))
+
+    async def fake_update_source_extraction_query(source_id, query):
+        extraction_query_calls.append((source_id, query))
 
     async def behavior(**kwargs):
         return {
@@ -87,7 +111,10 @@ async def test_convert_database_data_sets_active_status_on_success(monkeypatch):
         }
 
     monkeypatch.setattr(main_module, "get_source", fake_get_source)
-    monkeypatch.setattr(main_module, "update_source", fake_update_source)
+    monkeypatch.setattr(main_module, "create_source_version", fake_create_source_version)
+    monkeypatch.setattr(main_module, "update_source_version", fake_update_source_version)
+    monkeypatch.setattr(main_module, "update_source_current_version", fake_update_source_current_version)
+    monkeypatch.setattr(main_module, "update_source_extraction_query", fake_update_source_extraction_query)
     monkeypatch.setattr(main_module, "get_secret_manager", lambda: _SecretManager())
     monkeypatch.setattr(
         main_module.ConnectorFactory,
@@ -105,17 +132,28 @@ async def test_convert_database_data_sets_active_status_on_success(monkeypatch):
     response = await main_module.convert_database_data(request=request, body=body)
 
     assert response.success is True
-    assert calls == [
-        (
-            "src-1",
-            {"status": "active", "row_count": 12, "file_size_bytes": 1572864},
-        )
+    assert response.metadata.version == 1
+
+    # source_version updated to active with metrics
+    assert version_calls == [
+        ("sv-1", "active", {
+            "row_count": 12,
+            "column_count": 3,
+            "file_size_bytes": 1572864,
+            "processing_time_seconds": 0.2,
+        })
     ]
+
+    # sources.current_version incremented
+    assert current_version_calls == [("src-1", 1)]
+
+    # extraction_query stored
+    assert extraction_query_calls == [("src-1", "select 1")]
 
 
 @pytest.mark.anyio
 async def test_convert_database_data_sets_error_status_on_validation_error(monkeypatch):
-    calls = []
+    version_calls = []
 
     async def fake_get_source(source_id):
         return {
@@ -123,16 +161,29 @@ async def test_convert_database_data_sets_error_status_on_validation_error(monke
             "organization_id": "org-1",
             "connector_type": "postgresql",
             "source_type": "database",
+            "current_version": 0,
         }
 
-    async def fake_update_source(source_id, **kwargs):
-        calls.append((source_id, kwargs))
+    async def fake_create_source_version(source_id, version, status="pending"):
+        return {"id": "sv-2", "source_id": source_id, "version": version, "status": status}
+
+    async def fake_update_source_version(version_id, status, **kwargs):
+        version_calls.append((version_id, status, kwargs))
+
+    async def fake_update_source_current_version(source_id, version):
+        pass
+
+    async def fake_update_source_extraction_query(source_id, query):
+        pass
 
     async def behavior(**kwargs):
         raise ValidationError("Invalid query")
 
     monkeypatch.setattr(main_module, "get_source", fake_get_source)
-    monkeypatch.setattr(main_module, "update_source", fake_update_source)
+    monkeypatch.setattr(main_module, "create_source_version", fake_create_source_version)
+    monkeypatch.setattr(main_module, "update_source_version", fake_update_source_version)
+    monkeypatch.setattr(main_module, "update_source_current_version", fake_update_source_current_version)
+    monkeypatch.setattr(main_module, "update_source_extraction_query", fake_update_source_extraction_query)
     monkeypatch.setattr(main_module, "get_secret_manager", lambda: _SecretManager())
     monkeypatch.setattr(
         main_module.ConnectorFactory,
@@ -152,12 +203,12 @@ async def test_convert_database_data_sets_error_status_on_validation_error(monke
 
     assert excinfo.value.status_code == 400
     assert excinfo.value.detail == "Invalid query"
-    assert calls == [("src-2", {"status": "error"})]
+    assert version_calls == [("sv-2", "error", {"error_message": "Invalid query"})]
 
 
 @pytest.mark.anyio
 async def test_convert_database_data_sets_error_status_on_unexpected_exception(monkeypatch):
-    calls = []
+    version_calls = []
 
     async def fake_get_source(source_id):
         return {
@@ -165,16 +216,29 @@ async def test_convert_database_data_sets_error_status_on_unexpected_exception(m
             "organization_id": "org-1",
             "connector_type": "postgresql",
             "source_type": "database",
+            "current_version": 0,
         }
 
-    async def fake_update_source(source_id, **kwargs):
-        calls.append((source_id, kwargs))
+    async def fake_create_source_version(source_id, version, status="pending"):
+        return {"id": "sv-3", "source_id": source_id, "version": version, "status": status}
+
+    async def fake_update_source_version(version_id, status, **kwargs):
+        version_calls.append((version_id, status, kwargs))
+
+    async def fake_update_source_current_version(source_id, version):
+        pass
+
+    async def fake_update_source_extraction_query(source_id, query):
+        pass
 
     async def behavior(**kwargs):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(main_module, "get_source", fake_get_source)
-    monkeypatch.setattr(main_module, "update_source", fake_update_source)
+    monkeypatch.setattr(main_module, "create_source_version", fake_create_source_version)
+    monkeypatch.setattr(main_module, "update_source_version", fake_update_source_version)
+    monkeypatch.setattr(main_module, "update_source_current_version", fake_update_source_current_version)
+    monkeypatch.setattr(main_module, "update_source_extraction_query", fake_update_source_extraction_query)
     monkeypatch.setattr(main_module, "get_secret_manager", lambda: _SecretManager())
     monkeypatch.setattr(
         main_module.ConnectorFactory,
@@ -194,4 +258,4 @@ async def test_convert_database_data_sets_error_status_on_unexpected_exception(m
 
     assert excinfo.value.status_code == 500
     assert "Internal server error: boom" in excinfo.value.detail
-    assert calls == [("src-3", {"status": "error"})]
+    assert version_calls == [("sv-3", "error", {"error_message": "boom"})]
