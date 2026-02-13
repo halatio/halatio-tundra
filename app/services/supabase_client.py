@@ -14,9 +14,16 @@ def get_supabase_client() -> Client:
     """Return a module-level singleton Supabase client."""
     global _client
     if _client is None:
+        service_key = settings.SUPABASE_SECRET_KEY
+        if not service_key:
+            raise ValueError(
+                "Supabase service key is not configured. Set mounted secrets, Secret Manager "
+                "references, or local env fallback values."
+            )
+
         _client = create_client(
             settings.SUPABASE_URL,
-            settings.SUPABASE_SECRET_KEY,
+            service_key,
             options=ClientOptions(auto_refresh_token=False, persist_session=False),
         )
     return _client
