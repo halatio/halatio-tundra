@@ -12,6 +12,8 @@ from typing import Any, Dict, Optional
 from tenacity import retry, stop_after_attempt, wait_exponential_jitter
 import anyio
 
+from ..resilience import external_dependency_breaker, should_trip_breaker
+
 logger = logging.getLogger(__name__)
 
 # Timeout for blocking DB extraction operations (matches MAX_PROCESSING_TIME_MINUTES)
@@ -200,13 +202,16 @@ class DuckDBBaseConnector(ABC):
 
         try:
             async with asyncio.timeout(_EXTRACTION_TIMEOUT_SECONDS):
-                result = await anyio.to_thread.run_sync(
-                    self._extract_sync,
-                    query,
-                    output_path,
-                    compression,
-                    row_group_size,
-                    cancellable=True,
+                result = await external_dependency_breaker.call_async(
+                    lambda: anyio.to_thread.run_sync(
+                        self._extract_sync,
+                        query,
+                        output_path,
+                        compression,
+                        row_group_size,
+                        cancellable=True,
+                    ),
+                    should_trip=should_trip_breaker,
                 )
         except asyncio.TimeoutError:
             logger.error(
