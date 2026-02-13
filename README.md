@@ -46,21 +46,17 @@ POST /convert/file  ──► lookup source_id       ──► Supabase (sources
 | `SECRETS_JSON_PATH` | | Mounted JSON file containing runtime secrets (default: `/secrets/credentials.json`) |
 | `R2_SECRET_ID` |*| Secret Manager ID containing R2 credentials JSON (`access_key_id` + `secret_access_key`) |
 | `R2_SECRET_VERSION` | | Secret version for `R2_SECRET_ID` (default: `latest`) |
-| `R2_ACCESS_KEY_ID_PATH` |*| Mounted file path containing R2 access key ID (when not using `R2_SECRET_ID`) |
-| `R2_SECRET_ACCESS_KEY_PATH` |*| Mounted file path containing R2 secret access key (when not using `R2_SECRET_ID`) |
 | `CLOUDFLARE_ACCOUNT_ID` | ✓ | Cloudflare account ID (32-char hex) |
 | `SUPABASE_URL` | ✓ | Supabase project URL |
 | `SUPABASE_SECRET_ID` |*| Secret Manager ID containing Supabase service key |
 | `SUPABASE_SECRET_VERSION` | | Secret version for `SUPABASE_SECRET_ID` (default: `latest`) |
-| `SUPABASE_SECRET_KEY_PATH` |*| Mounted file path containing Supabase service key (when not using `SUPABASE_SECRET_ID`) |
 | `DUCKDB_MEMORY_LIMIT` | | DuckDB memory cap (default: `6GB`) |
 | `DUCKDB_THREADS` | | DuckDB thread count (default: `2`) |
 | `DUCKDB_TEMP_DIR` | | Spill directory (default: `/tmp/duckdb_swap`) |
 | `DUCKDB_MAX_TEMP_DIR_SIZE` | | Max spill size (default: `1GB`) |
-| `USE_ADBC_DRIVER` | | Set to `true` to use ADBC for PostgreSQL/Redshift (see below) |
 | `MAX_PROCESSING_TIME_MINUTES` | | Async timeout for conversions (default: `10`) |
 
-`*` = provide one secure source (Secret Manager ID, mounted file path, or mounted JSON file). Plain secret env vars are intended only as local-dev fallback.
+`*` = provide one secure source (Secret Manager ID or mounted JSON file). Plain secret env vars are intended only as local-dev fallback.
 
 ---
 
@@ -358,13 +354,9 @@ With a `600` units/minute quota, expensive operations consume quota faster than 
 
 ---
 
-## ADBC Support (Optional)
+## ADBC Support
 
-For PostgreSQL and Redshift extractions, you can enable **ADBC** (Arrow Database Connectivity) for better performance on large result sets:
-
-```bash
-export USE_ADBC_DRIVER=true
-```
+For PostgreSQL and Redshift extractions, Tundra **always prefers ADBC** (Arrow Database Connectivity) for better performance on large result sets.
 
 Requires `adbc-driver-postgresql>=1.1.0` (included in `requirements.txt`).
 

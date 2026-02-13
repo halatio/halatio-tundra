@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Google Cloud (Secret Manager for database credentials)
     GCP_PROJECT_ID: str = Field(..., description="Google Cloud Project ID")
 
-    # Optional mounted consolidated secrets file
+    # Mounted consolidated secrets file
     SECRETS_JSON_PATH: str = Field(
         "/secrets/credentials.json",
         description="Mounted JSON file path containing runtime secrets",
@@ -38,14 +38,6 @@ class Settings(BaseSettings):
         description="Secret Manager secret ID containing R2 key material"
     )
     R2_SECRET_VERSION: str = Field("latest", description="Secret version for R2_SECRET_ID")
-    R2_ACCESS_KEY_ID_PATH: Optional[str] = Field(
-        None,
-        description="Mounted file path containing the R2 access key ID"
-    )
-    R2_SECRET_ACCESS_KEY_PATH: Optional[str] = Field(
-        None,
-        description="Mounted file path containing the R2 secret access key"
-    )
     CLOUDFLARE_ACCOUNT_ID: str = Field(..., description="Cloudflare account ID (32-char hex)")
 
     # Supabase secrets
@@ -55,10 +47,6 @@ class Settings(BaseSettings):
         description="Secret Manager secret ID containing Supabase service key"
     )
     SUPABASE_SECRET_VERSION: str = Field("latest", description="Secret version for SUPABASE_SECRET_ID")
-    SUPABASE_SECRET_KEY_PATH: Optional[str] = Field(
-        None,
-        description="Mounted file path containing Supabase service key"
-    )
 
     # DuckDB
     DUCKDB_MEMORY_LIMIT: str = Field("5GB", description="DuckDB memory limit")
@@ -80,14 +68,6 @@ class Settings(BaseSettings):
                 self.__class__._secrets_cache = {}
         return self.__class__._secrets_cache
 
-    def _read_secret_file(self, path: Optional[str]) -> Optional[str]:
-        if not path:
-            return None
-        if not os.path.exists(path):
-            return None
-        value = open(path, "r", encoding="utf-8").read().strip()
-        return value or None
-
     def _get_secret_payload(self, secret_id: Optional[str], version: str) -> Optional[str]:
         if not secret_id:
             return None
@@ -108,10 +88,6 @@ class Settings(BaseSettings):
         if value:
             return str(value)
 
-        file_value = self._read_secret_file(self.R2_ACCESS_KEY_ID_PATH)
-        if file_value:
-            return file_value
-
         payload = self._get_secret_payload(self.R2_SECRET_ID, self.R2_SECRET_VERSION)
         if payload:
             parsed = json.loads(payload)
@@ -128,10 +104,6 @@ class Settings(BaseSettings):
         if value:
             return str(value)
 
-        file_value = self._read_secret_file(self.R2_SECRET_ACCESS_KEY_PATH)
-        if file_value:
-            return file_value
-
         payload = self._get_secret_payload(self.R2_SECRET_ID, self.R2_SECRET_VERSION)
         if payload:
             parsed = json.loads(payload)
@@ -147,10 +119,6 @@ class Settings(BaseSettings):
         value = secrets.get("supabase_secret_key") or secrets.get("SUPABASE_SECRET_KEY")
         if value:
             return str(value)
-
-        file_value = self._read_secret_file(self.SUPABASE_SECRET_KEY_PATH)
-        if file_value:
-            return file_value
 
         payload = self._get_secret_payload(self.SUPABASE_SECRET_ID, self.SUPABASE_SECRET_VERSION)
         if payload:
