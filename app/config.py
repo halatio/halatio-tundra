@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8080
 
-    MAX_FILE_SIZE_MB: int = 500
+    MAX_FILE_SIZE_MB: int = 250
     MAX_PROCESSING_TIME_MINUTES: int = 10
 
     SUPPORTED_FILE_FORMATS: List[str] = ["csv", "tsv", "json", "geojson", "excel", "parquet"]
@@ -31,8 +31,8 @@ class Settings(BaseSettings):
     SUPABASE_SECRET_KEY: str = Field(..., description="Supabase secret key (sb_secret_...)")
 
     # DuckDB
-    DUCKDB_MEMORY_LIMIT: str = Field("12GB", description="DuckDB memory limit")
-    DUCKDB_THREADS: int = Field(4, description="DuckDB thread count")
+    DUCKDB_MEMORY_LIMIT: str = Field("5GB", description="DuckDB memory limit")
+    DUCKDB_THREADS: int = Field(2, description="DuckDB thread count")
     DUCKDB_TEMP_DIR: str = Field("/tmp/duckdb_swap", description="DuckDB spill directory")
     DUCKDB_MAX_TEMP_DIR_SIZE: str = Field("2GB", description="Max DuckDB temp directory size")
 
