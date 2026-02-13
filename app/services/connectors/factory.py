@@ -1,6 +1,5 @@
 """Connector factory for creating connector instances"""
 
-import os
 import logging
 from typing import Dict, Any
 from .base import BaseConnector
@@ -13,29 +12,26 @@ from .sqlite_duckdb import SQLiteDuckDBConnector
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# ADBC feature flag
+# ADBC connector preference
 #
-# Set USE_ADBC_DRIVER=true to use the ADBC PostgreSQL connector instead of
-# the DuckDB postgres scanner.  Requires adbc-driver-postgresql >= 1.1.0.
+# Always prefer the ADBC PostgreSQL connector for PostgreSQL/Redshift.
+# Requires adbc-driver-postgresql >= 1.1.0.
 # Falls back to the DuckDB connector if the package is not installed.
 # ---------------------------------------------------------------------------
 
 def _resolve_postgres_connector():
-    """Return the PostgreSQL connector class to use based on USE_ADBC_DRIVER env flag."""
-    if os.getenv("USE_ADBC_DRIVER", "").lower() not in ("1", "true", "yes"):
-        return PostgresDuckDBConnector
-
+    """Return the PostgreSQL connector class, preferring ADBC with safe fallback."""
     try:
         import adbc_driver_postgresql  # noqa: F401 — availability check only
         from .postgres_adbc import PostgresADBCConnector
         logger.info(
-            "USE_ADBC_DRIVER=true — using ADBC PostgreSQL connector "
+            "Using ADBC PostgreSQL connector "
             "(adbc_driver_postgresql detected)"
         )
         return PostgresADBCConnector
     except ImportError:
         logger.warning(
-            "USE_ADBC_DRIVER=true but adbc_driver_postgresql is not installed. "
+            "adbc_driver_postgresql is not installed. "
             "Falling back to DuckDB postgres scanner. "
             "Install with: pip install adbc-driver-postgresql>=1.1.0"
         )
@@ -66,8 +62,8 @@ class ConnectorFactory:
         """
         Create connector instance.
 
-        For PostgreSQL and Redshift, the actual class is chosen at call time
-        based on the USE_ADBC_DRIVER environment flag.
+        For PostgreSQL and Redshift, the actual class is chosen at call time,
+        preferring ADBC and falling back to DuckDB if unavailable.
 
         Args:
             connector_type: Type of connector (postgresql, mysql, sqlite, mariadb, redshift)

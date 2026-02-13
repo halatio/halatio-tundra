@@ -5,9 +5,6 @@ giving better memory efficiency than the DuckDB postgres scanner for large
 extractions.  DuckDB is still used for Parquet/R2 writing so that direct
 R2 writes via the persistent httpfs secret are preserved.
 
-Enable this connector by setting the environment variable:
-    USE_ADBC_DRIVER=true
-
 Falls back to the DuckDB postgres scanner if the adbc_driver_postgresql
 package is not installed.
 """

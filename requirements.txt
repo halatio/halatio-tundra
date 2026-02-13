@@ -6,8 +6,7 @@ uvicorn[standard]
 pyarrow
 duckdb>=1.4.0
 
-# ADBC (Arrow Database Connectivity) — optional alternative PostgreSQL connector
-# Enable with: USE_ADBC_DRIVER=true
+# ADBC (Arrow Database Connectivity) — preferred PostgreSQL connector
 # Provides zero-copy Arrow transfer; requires adbc_driver_postgresql >= 1.1.0
 adbc-driver-manager>=1.1.0
 adbc-driver-postgresql>=1.1.0
