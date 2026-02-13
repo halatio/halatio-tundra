@@ -50,7 +50,7 @@ class SecretManagerService:
             secret_name = f"{parent}/secrets/{secret_id}"
             try:
                 self.client.get_secret(request={"name": secret_name})
-                logger.info(f"Secret {secret_id} already exists, adding new version")
+                logger.info("Secret already exists, adding new version")
             except Exception:
                 # Create new secret
                 secret = self.client.create_secret(
@@ -63,7 +63,7 @@ class SecretManagerService:
                         }
                     }
                 )
-                logger.info(f"Created new secret: {secret_id}")
+                logger.info("Created new secret")
 
             # Add secret version
             payload = json.dumps(credentials).encode("UTF-8")
@@ -74,7 +74,7 @@ class SecretManagerService:
                 }
             )
 
-            logger.info(f"✅ Stored credentials in Secret Manager: {secret_id}")
+            logger.info("✅ Stored credentials in Secret Manager")
             return secret_id
 
         except Exception as e:
@@ -92,32 +92,45 @@ class SecretManagerService:
         Returns:
             Credential dictionary
         """
-        # Check cache first
+        payload = self.get_secret_payload(secret_id=secret_id, version="latest", use_cache=use_cache)
+        try:
+            credentials = json.loads(payload)
+            return credentials
+        except Exception as e:
+            logger.error(f"❌ Failed to retrieve credentials: {str(e)}")
+            raise
+
+    def get_secret_payload(
+        self,
+        secret_id: str,
+        version: str = "latest",
+        use_cache: bool = True,
+    ) -> str:
+        """Retrieve a generic secret payload from Secret Manager with caching."""
+        cache_key = f"{secret_id}:{version}"
+
         if use_cache:
             with self._lock:
-                cached = self._cache.get(secret_id)
+                cached = self._cache.get(cache_key)
                 if cached and (time.time() - cached["fetched_at"]) < self.default_ttl:
-                    logger.debug(f"📦 Retrieved credentials from cache: {secret_id}")
-                    return cached["value"]
+                    logger.debug("📦 Retrieved secret payload from cache")
+                    return str(cached["value"])
 
-        # Fetch from Secret Manager
         try:
-            name = f"projects/{self.project_id}/secrets/{secret_id}/versions/latest"
+            name = f"projects/{self.project_id}/secrets/{secret_id}/versions/{version}"
             response = self.client.access_secret_version(request={"name": name})
-            credentials = json.loads(response.payload.data.decode("UTF-8"))
+            payload = response.payload.data.decode("UTF-8")
 
-            # Update cache
             with self._lock:
-                self._cache[secret_id] = {
-                    "value": credentials,
+                self._cache[cache_key] = {
+                    "value": payload,
                     "fetched_at": time.time()
                 }
 
-            logger.info(f"🔐 Retrieved credentials from Secret Manager: {secret_id}")
-            return credentials
-
+            logger.info("🔐 Retrieved secret payload from Secret Manager")
+            return payload
         except Exception as e:
-            logger.error(f"❌ Failed to retrieve credentials: {str(e)}")
+            logger.error(f"❌ Failed to retrieve secret payload: {str(e)}")
             raise
 
     def delete_credentials(self, secret_id: str) -> None:
@@ -130,7 +143,7 @@ class SecretManagerService:
             with self._lock:
                 self._cache.pop(secret_id, None)
 
-            logger.info(f"🗑️ Deleted credentials: {secret_id}")
+            logger.info("🗑️ Deleted credentials")
 
         except Exception as e:
             logger.error(f"❌ Failed to delete credentials: {str(e)}")

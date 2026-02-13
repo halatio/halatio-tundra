@@ -69,6 +69,17 @@ def _setup_r2_persistent_secret() -> None:
     home_directory='/tmp' will automatically load this secret, enabling direct
     R2 reads and writes without per-connection configuration.
     """
+    key_id = settings.R2_ACCESS_KEY_ID
+    secret_key = settings.R2_SECRET_ACCESS_KEY
+    if not key_id or not secret_key:
+        raise ValueError(
+            "R2 credentials are not configured. Set mounted secrets, Secret Manager "
+            "references, or local env fallback values."
+        )
+
+    safe_key_id = key_id.replace("'", "''")
+    safe_secret_key = secret_key.replace("'", "''")
+
     os.makedirs("/tmp/.duckdb/stored_secrets", exist_ok=True)
     conn = duckdb.connect(":memory:", config=_make_duckdb_config())
     try:
@@ -77,8 +88,8 @@ def _setup_r2_persistent_secret() -> None:
         conn.execute(f"""
             CREATE OR REPLACE PERSISTENT SECRET r2_tundra (
                 TYPE r2,
-                KEY_ID '{settings.R2_ACCESS_KEY_ID}',
-                SECRET '{settings.R2_SECRET_ACCESS_KEY}',
+                KEY_ID '{safe_key_id}',
+                SECRET '{safe_secret_key}',
                 ACCOUNT_ID '{settings.CLOUDFLARE_ACCOUNT_ID}'
             )
         """)
