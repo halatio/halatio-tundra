@@ -121,6 +121,17 @@ Version numbers are calculated as `sources.current_version + 1`.
 
 ## API Endpoints
 
+## CORS Policy
+
+The API CORS middleware only allows an explicit request-header allow-list for browser clients:
+
+- `Content-Type`
+- `Authorization`
+- `X-Request-ID`
+
+Current frontend/test clients in this repository send `Content-Type: application/json` and do not rely on additional custom headers.
+If a frontend starts sending a new custom header, update `allow_headers` in `app/main.py` explicitly as part of that change.
+
 ### Health
 
 #### `GET /health`
