@@ -12,6 +12,20 @@ x-google-backend:
   protocol: h2
   path_translation: APPEND_PATH_TO_ADDRESS
 
+x-google-management:
+  metrics:
+    - name: request_units
+      displayName: Request Units
+      valueType: INT64
+      metricKind: DELTA
+  quota:
+    limits:
+      - name: request-units-per-minute
+        metric: request_units
+        unit: "1/min/{project}"
+        values:
+          STANDARD: 600
+
 paths:
   /:
     get:
@@ -20,6 +34,9 @@ paths:
       responses:
         '200':
           description: Root response
+      x-google-quota:
+        metricCosts:
+          request_units: 1
 
   /health:
     get:
@@ -37,6 +54,9 @@ paths:
                 type: string
               version:
                 type: string
+      x-google-quota:
+        metricCosts:
+          request_units: 1
 
   /info:
     get:
@@ -58,6 +78,9 @@ paths:
                 type: object
               features:
                 type: object
+      x-google-quota:
+        metricCosts:
+          request_units: 1
 
   /connectors:
     get:
@@ -80,6 +103,11 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden
+        '429':
+          description: Quota exceeded at API Gateway
+      x-google-quota:
+        metricCosts:
+          request_units: 2
 
   /convert/{proxy}:
     get:
@@ -98,6 +126,11 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden
+        '429':
+          description: Quota exceeded at API Gateway
+      x-google-quota:
+        metricCosts:
+          request_units: 5
 
     post:
       operationId: convertPostProxy
@@ -127,8 +160,13 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden
+        '429':
+          description: Quota exceeded at API Gateway
         '500':
           description: Conversion failed
+      x-google-quota:
+        metricCosts:
+          request_units: 10
 
   /test/{proxy}:
     post:
@@ -158,8 +196,13 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden
+        '429':
+          description: Quota exceeded at API Gateway
         '500':
           description: Connection test failed
+      x-google-quota:
+        metricCosts:
+          request_units: 6
 
   /infer/{proxy}:
     post:
@@ -189,8 +232,13 @@ paths:
           description: Unauthorized
         '403':
           description: Forbidden
+        '429':
+          description: Quota exceeded at API Gateway
         '500':
           description: Schema inference failed
+      x-google-quota:
+        metricCosts:
+          request_units: 8
 
 securityDefinitions:
   supabase_jwt:

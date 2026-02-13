@@ -40,6 +40,13 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 
+# API Gateway quotas in openapi.yaml are the authoritative throttling layer.
+# SlowAPI limits below are intentionally permissive and act only as in-process
+# fallback protection if requests bypass the gateway.
+FALLBACK_LIMIT_CONVERT = "60/minute"
+FALLBACK_LIMIT_INFER = "120/minute"
+FALLBACK_LIMIT_TEST = "120/minute"
+
 
 def _r2_bucket(org_id: str) -> str:
     """Return the R2 bucket name for an organisation."""
@@ -210,7 +217,7 @@ async def service_info():
 # ---------------------------------------------------------------------------
 
 @app.post("/convert/file", response_model=ConversionResponse)
-@limiter.limit("10/minute")
+@limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_file(request: Request, body: FileConversionRequest):
     """Convert a file source to Parquet directly in R2."""
     logger.info(f"File conversion requested: source_id={body.source_id}")
@@ -286,7 +293,7 @@ async def convert_file(request: Request, body: FileConversionRequest):
 
 
 @app.post("/infer/schema", response_model=SchemaInferResponse)
-@limiter.limit("20/minute")
+@limiter.limit(FALLBACK_LIMIT_INFER)
 async def infer_schema(request: Request, body: SchemaInferRequest):
     """Infer schema from a file source directly in R2."""
     logger.info(f"Schema inference requested: source_id={body.source_id}")
@@ -317,7 +324,7 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
 
 
 @app.post("/test/database-connection", response_model=ConnectionTestResponse)
-@limiter.limit("20/minute")
+@limiter.limit(FALLBACK_LIMIT_TEST)
 async def test_database_connection(request: Request, body: ConnectionTestRequest):
     """Test a database connection before saving credentials."""
     logger.info(f"Testing {body.connector_type} connection")
@@ -344,7 +351,7 @@ async def test_database_connection(request: Request, body: ConnectionTestRequest
 
 
 @app.post("/convert/database", response_model=ConversionResponse)
-@limiter.limit("10/minute")
+@limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_database_data(request: Request, body: DatabaseConversionRequest):
     """Extract database data and write Parquet directly to R2."""
     logger.info(f"Database conversion requested: source_id={body.source_id}")
