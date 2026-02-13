@@ -29,6 +29,7 @@ class FileConverter:
         output_path: str,
         file_format: str,
         options: Dict[str, Any] = {},
+        version: int = 1,
     ) -> Dict[str, Any]:
         """
         Convert a file to Parquet.
@@ -38,6 +39,7 @@ class FileConverter:
             output_path: R2 URL (r2://bucket/key.parquet) or local path
             file_format: csv, tsv, json, geojson, excel, parquet
             options: Conversion options (column_mapping, type_overrides, skip_rows, …)
+            version: Source version number for metadata
         """
         start_time = time.time()
         options = options or {}
@@ -61,6 +63,7 @@ class FileConverter:
                 file_size_mb = os.path.getsize(output_path) / 1024 / 1024
 
             metadata = ConversionMetadata(
+                version=version,
                 rows=result["rows"],
                 columns=result["columns"],
                 column_schema=result.get("column_schema", {"fields": []}),

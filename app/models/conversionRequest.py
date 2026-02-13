@@ -39,6 +39,7 @@ class SchemaInferRequest(BaseModel):
 
 class ConversionMetadata(BaseModel):
     """Metadata about the converted dataset"""
+    version: int = Field(..., description="Source version number")
     rows: int = Field(..., description="Number of rows in the output dataset")
     columns: int = Field(..., description="Number of columns")
     column_schema: Dict[str, Any] = Field(..., description="Column schema information")
