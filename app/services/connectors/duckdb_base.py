@@ -176,7 +176,7 @@ class DuckDBBaseConnector(ABC):
         query: Optional[str] = None,
         table_name: Optional[str] = None,
         compression: str = "zstd",
-        row_group_size: int = 122880,
+        row_group_size: int = 50000,
         **kwargs,
     ) -> Dict[str, Any]:
         """

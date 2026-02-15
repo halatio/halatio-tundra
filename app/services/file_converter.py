@@ -116,7 +116,7 @@ class FileConverter:
             conn.execute(f"""
                 COPY ({select_sql})
                 TO '{output_path}'
-                (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 122880)
+                (FORMAT parquet, COMPRESSION zstd, ROW_GROUP_SIZE 50000)
             """)
 
             # Read back schema from output (works for both local and R2 paths)

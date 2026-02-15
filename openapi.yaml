@@ -247,3 +247,4 @@ securityDefinitions:
     authorizationUrl: ""
     x-google-issuer: https://tcfdohdxjkwbvmohumex.supabase.co/auth/v1
     x-google-jwks_uri: https://tcfdohdxjkwbvmohumex.supabase.co/auth/v1/.well-known/jwks.json
+    x-google-audiences: "authenticated"
