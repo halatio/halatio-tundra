@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 import duckdb
 import logging
 import os
+from pythonjsonlogger import jsonlogger
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
@@ -36,8 +37,19 @@ from .services.connectors.duckdb_base import _make_duckdb_config
 from .services.resilience import CircuitBreakerOpenError
 from .utils import raise_http_exception, ValidationError, DatabaseError
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+_json_handler = logging.StreamHandler()
+_json_handler.setFormatter(
+    jsonlogger.JsonFormatter(
+        '%(asctime)s %(name)s %(levelname)s %(message)s %(source_id)s %(version)s '
+        '%(rows)s %(processing_time_seconds)s %(connector_type)s %(error)s %(severity)s'
+    )
+)
+logger.handlers.clear()
+logger.addHandler(_json_handler)
+logger.propagate = False
 
 limiter = Limiter(key_func=get_remote_address)
 
@@ -221,7 +233,10 @@ async def service_info():
 @limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_file(request: Request, body: FileConversionRequest):
     """Convert a file source to Parquet directly in R2."""
-    logger.info(f"File conversion requested: source_id={body.source_id}")
+    logger.info(
+        "File conversion requested",
+        extra={"source_id": body.source_id, "severity": "INFO"},
+    )
 
     source_version = None
     try:
@@ -241,7 +256,14 @@ async def convert_file(request: Request, body: FileConversionRequest):
         src = _source_path(org_id, body.source_id)
         out = _output_path(org_id, body.source_id, next_version)
 
-        logger.info(f"Converting {file_format} -> {out}")
+        logger.info(
+            "Starting file conversion",
+            extra={
+                "source_id": body.source_id,
+                "version": next_version,
+                "severity": "INFO",
+            },
+        )
 
         options = body.options.dict() if body.options else {}
         result = await FileConverter.convert(
@@ -275,7 +297,16 @@ async def convert_file(request: Request, body: FileConversionRequest):
         # Increment sources.current_version
         await update_source_current_version(body.source_id, next_version)
 
-        logger.info(f"File conversion complete: {meta['rows']} rows, v{next_version}")
+        logger.info(
+            "File conversion complete",
+            extra={
+                "source_id": body.source_id,
+                "version": next_version,
+                "rows": meta["rows"],
+                "processing_time_seconds": meta["processing_time_seconds"],
+                "severity": "INFO",
+            },
+        )
         return ConversionResponse(**result)
 
     except ValueError as e:
@@ -286,7 +317,10 @@ async def convert_file(request: Request, body: FileConversionRequest):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"File conversion failed: {e}")
+        logger.error(
+            "File conversion failed",
+            extra={"source_id": body.source_id, "error": str(e), "severity": "ERROR"},
+        )
         if source_version:
             await update_source_version(
                 version_id=source_version["id"],
@@ -300,7 +334,10 @@ async def convert_file(request: Request, body: FileConversionRequest):
 @limiter.limit(FALLBACK_LIMIT_INFER)
 async def infer_schema(request: Request, body: SchemaInferRequest):
     """Infer schema from a file source directly in R2."""
-    logger.info(f"Schema inference requested: source_id={body.source_id}")
+    logger.info(
+        "Schema inference requested",
+        extra={"source_id": body.source_id, "severity": "INFO"},
+    )
 
     try:
         source = await get_source(body.source_id)
@@ -317,7 +354,14 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
             body.sample_size,
         )
 
-        logger.info(f"Schema inference complete: {result['schema_info']['total_columns']} columns")
+        logger.info(
+            "Schema inference complete",
+            extra={
+                "source_id": body.source_id,
+                "rows": result["schema_info"]["total_columns"],
+                "severity": "INFO",
+            },
+        )
         return SchemaInferResponse(**result)
 
     except ValueError as e:
@@ -326,7 +370,10 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
         logger.warning("Fast-fail due to open circuit breaker: %s", e)
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Schema inference failed: {e}")
+        logger.error(
+            "Schema inference failed",
+            extra={"source_id": body.source_id, "error": str(e), "severity": "ERROR"},
+        )
         raise HTTPException(status_code=500, detail=f"Schema inference failed: {e}")
 
 
@@ -334,7 +381,10 @@ async def infer_schema(request: Request, body: SchemaInferRequest):
 @limiter.limit(FALLBACK_LIMIT_TEST)
 async def test_database_connection(request: Request, body: ConnectionTestRequest):
     """Test a database connection before saving credentials."""
-    logger.info(f"Testing {body.connector_type} connection")
+    logger.info(
+        "Testing database connection",
+        extra={"connector_type": body.connector_type, "severity": "INFO"},
+    )
 
     try:
         connector = ConnectorFactory.create_connector(
@@ -344,16 +394,29 @@ async def test_database_connection(request: Request, body: ConnectionTestRequest
         result = await connector.test_connection()
 
         if result["success"]:
-            logger.info(f"Connection test succeeded: {body.connector_type}")
+            logger.info(
+                "Connection test succeeded",
+                extra={"connector_type": body.connector_type, "severity": "INFO"},
+            )
         else:
-            logger.warning(f"Connection test failed: {result.get('error')}")
+            logger.warning(
+                "Connection test failed",
+                extra={
+                    "connector_type": body.connector_type,
+                    "error": result.get("error"),
+                    "severity": "WARNING",
+                },
+            )
 
         return ConnectionTestResponse(**result)
 
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Connection test error: {e}")
+        logger.error(
+            "Connection test error",
+            extra={"connector_type": body.connector_type, "error": str(e), "severity": "ERROR"},
+        )
         raise_http_exception(e)
 
 
@@ -361,7 +424,10 @@ async def test_database_connection(request: Request, body: ConnectionTestRequest
 @limiter.limit(FALLBACK_LIMIT_CONVERT)
 async def convert_database_data(request: Request, body: DatabaseConversionRequest):
     """Extract database data and write Parquet directly to R2."""
-    logger.info(f"Database conversion requested: source_id={body.source_id}")
+    logger.info(
+        "Database conversion requested",
+        extra={"source_id": body.source_id, "severity": "INFO"},
+    )
 
     source_version = None
     try:
@@ -415,7 +481,14 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
         await update_source_current_version(body.source_id, next_version)
 
         logger.info(
-            f"Database conversion complete: {metadata['rows']} rows -> {out}"
+            "Database conversion complete",
+            extra={
+                "source_id": body.source_id,
+                "version": next_version,
+                "rows": metadata["rows"],
+                "processing_time_seconds": metadata["processing_time_seconds"],
+                "severity": "INFO",
+            },
         )
 
         conversion_metadata = ConversionMetadata(
@@ -454,7 +527,10 @@ async def convert_database_data(request: Request, body: DatabaseConversionReques
             )
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
-        logger.error(f"Database conversion failed: {e}")
+        logger.error(
+            "Database conversion failed",
+            extra={"source_id": body.source_id, "error": str(e), "severity": "ERROR"},
+        )
         if source_version:
             await update_source_version(
                 version_id=source_version["id"],
