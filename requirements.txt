@@ -34,6 +34,9 @@ slowapi
 # Retry logic
 tenacity>=8.2.3
 
+# Structured logging
+python-json-logger>=2.0.0
+
 # Async utilities
 anyio>=4.0.0
 
